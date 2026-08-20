@@ -1,0 +1,11 @@
+Generic template: 
+[LOCATION] [TASK TYPE] ...
+desktop stable-diffusion t2i illustrious 40 1024 1:1 "scenery,mountain,anime,masterpiece,best quality"
+
+Stable Diffusion template:
+[WORKLOAD TYPE]
+t2i
+
+T2I Template:
+[MODEL] [HEIGHT] [ASPECT RATIO] [PROMPT]
+illustrious 40 1024 1:1 "scenery,mountain,anime,masterpiece,best quality"
