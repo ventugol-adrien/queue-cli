@@ -1,0 +1,42 @@
+template: "base.yaml.j2"
+
+values:
+  # Base Envelope Definition
+  definition:
+    name: "T2I"
+    description: "Basic text-to-image pipeline executed on local desktop"
+    location: "desktop"
+    type: "text2image"
+
+  # Modular task payload template selector
+  task_definition: "stable-diffusion:t2i.yaml.j2"
+
+  # Text2Image Task Parameters
+  model: "juggernaut"
+  user_input: "cinematic shot of misty alpine mountains during golden hour sunrise, photorealistic, 8k"
+  negative_input: "blurry, low quality, artifacts, distorted, watermark"
+  steps: 40
+  cfg_scale: 7.5
+  width: 1024
+  height: 1024
+  batch_size: 1
+  image_seed: -1
+  lightning: false
+  embedding_mode: "compel"
+
+  # Delivery Channels (Push Notification + Email)
+  deliveries:
+    - type: "notification"
+      endpoint: "https://desktop.adriens-apis.io/notify/jobs"
+      title: "Basic Desktop T2I Finished"
+      priority: 3
+      tags:
+        - art
+        - desktop
+      markdown: true
+
+    - type: "email"
+      to: "adrien@example.com"
+      subject: "Generation Complete: Basic Desktop T2I"
+      body: "Your 1024x1024 image generation finished in 40 steps."
+      attachments: []

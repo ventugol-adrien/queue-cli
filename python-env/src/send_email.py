@@ -78,6 +78,9 @@ def send_mail(to_addr, subject, body, attachment_path=None):
         sys.exit(1)
 
 def main():
+    """
+    Main cli parser
+    """
     parser = argparse.ArgumentParser(description="Standalone Gmail API Dispatcher")
     parser.add_argument("-t", "--to", required=True, help="Recipient email address")
     parser.add_argument("-s", "--subject", required=True, help="Email subject line")
