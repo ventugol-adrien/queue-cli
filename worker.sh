@@ -88,9 +88,7 @@ run () {
         --arg status "running" \
         '$ARGS.named' >> "$STATUS_DIR/$JOB_ID.jsonl"
 
-    local cmd
-    cmd="$(<"$PROC_DIR/$JOB_ID")"
-    eval "$cmd"
+    task "$PROC_DIR/$JOB_ID.yaml"
     CONCLUSION=$?
 }
 

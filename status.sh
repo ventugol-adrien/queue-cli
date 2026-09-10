@@ -10,7 +10,15 @@ if [ -n "${1:-}" ]; then
     JOB_LOG="$STATUS_DIR/$1.jsonl"
     if [ -f "$JOB_LOG" ]; then
         echo "=== Audit History for Job: $1 ==="
-        jq -s . "$JOB_LOG"
+        tail -n +1 -f "$JOB_LOG" | while IFS= read -r line; do
+            echo "$line"
+            status=$(echo "$line" | jq -r '.status // empty')
+            if [[ "$status" == "success" || "$status" == "failure" ]]; then
+                echo "=== Job finalized with status: $status ==="
+                break
+            fi
+        done
+        exit 0
     else
         echo "Error: Job ID '$1' not found in $STATUS_DIR" >&2
         exit 1

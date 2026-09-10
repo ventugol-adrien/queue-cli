@@ -12,16 +12,15 @@ import yaml
 load_dotenv()
 
 # --- Directory Paths ---
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TEMPLATES_DIR = Path(
-    os.getenv("TEMPLATES_DIR", "/home/adrien/dev/utils/queue-cli/templates")
+    os.getenv("TEMPLATES_DIR", str(PROJECT_ROOT / "templates"))
 ).resolve()
 TASK_DEF_DIR = Path(
-    os.getenv(
-        "TASK_DEF_DIR", "/home/adrien/dev/utils/queue-cli/templates/task_templates"
-    )
+    os.getenv("TASK_DEF_DIR", str(PROJECT_ROOT / "templates/task_templates"))
 ).resolve()
 WORKFLOWS_DIR = Path(
-    os.getenv("WORKFLOWS_DIR", "/home/adrien/dev/utils/queue-cli/workflows")
+    os.getenv("WORKFLOWS_DIR", str(PROJECT_ROOT / "workflows"))
 ).resolve()
 
 # Multi-path loader: Jinja searches TEMPLATES_DIR first, then TASK_DEF_DIR
@@ -134,6 +133,7 @@ def parse(workflow_file: str | Path, **overrides) -> dict:
 
     # 4. Parse rendered YAML into final dictionary
     return yaml.safe_load(rendered)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(

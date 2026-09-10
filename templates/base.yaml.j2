@@ -17,6 +17,8 @@ deliveries:
     title: "{{ d.title | default(definition.name) }}"
     priority: {{ d.priority | default(3) }}
     tags: {{ d.tags | default(['sparkles']) }}
+    body: "{{ d.body | default('') }}"
+    destination: "{{ d.destination | default('') }}"
     markdown: {{ d.markdown | default(true) | lower }}
     {% elif d.type == 'email' %}
     to: "{{ d.to }}"

@@ -8,13 +8,13 @@ fi
 queue-cli
 
 case "${1:-}" in
-    enqueue|status|restart)
+    enqueue|status|restart|brake)
         ACTION="$1"
         shift
         exec "$SCRIPT_DIR/$ACTION.sh" "$@"
         ;;
     *)
-        echo "Usage: $0 {enqueue|status|restart}"
+        echo "Usage: $0 {enqueue|status|restart|brake}"
         exit 1
         ;;
 esac

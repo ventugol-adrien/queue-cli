@@ -4,8 +4,8 @@ values:
   # Base Envelope Definition
   definition:
     name: "T2I"
-    description: "Basic text-to-image pipeline executed on local desktop"
-    location: "desktop"
+    description: "Basic text-to-image pipeline executed at the location of your choice"
+    location: "my_location"
     type: "text2image"
 
   # Modular task payload template selector
@@ -21,14 +21,17 @@ values:
   height: 1024
   batch_size: 1
   image_seed: -1
+  out: "./output.png"
   lightning: false
   embedding_mode: "compel"
 
   # Delivery Channels (Push Notification + Email)
   deliveries:
     - type: "notification"
-      endpoint: "https://desktop.adriens-apis.io/notify/jobs"
+      endpoint: "https://my/job/endpoint"
       title: "Basic Desktop T2I Finished"
+      body: "Your 1024x1024 image generation finished in 40 steps."
+      destination: "my_node"
       priority: 3
       tags:
         - art
@@ -36,7 +39,7 @@ values:
       markdown: true
 
     - type: "email"
-      to: "adrien@example.com"
+      to: "my_email@gmail.com"
       subject: "Generation Complete: Basic Desktop T2I"
       body: "Your 1024x1024 image generation finished in 40 steps."
-      attachments: []
+      attachments: ["./output.png"]

@@ -1,0 +1,4 @@
+*python-env/caches
+*python-env/logs
+*.env
+*.png
