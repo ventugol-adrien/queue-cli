@@ -56,6 +56,7 @@ class Notification(BaseDelivery):
     priority: int = Field(default=1)
     tags: List[str] = Field(default_factory=list)
     markdown: bool = Field(default=True)
+    output: str = Field(default="./output.png")
 
     def deliver(self, *args, **kwargs) -> None:
         cmd = ["curl"]
@@ -65,6 +66,15 @@ class Notification(BaseDelivery):
             cmd.extend(["-H", f"X-Target: {self.destination}"])
         if self.body:
             cmd.extend(["-d", self.body, self.endpoint])
+        if self.output:
+            cmd.extend(
+                [
+                    "-H",
+                    f"Click: {self.output}",
+                ]
+            )
+        if self.markdown:
+            cmd.extend(["-H", "Content-Type: text/markdown"])
 
         print(f"Running command: {shlex.join(cmd)}")
         run(cmd, check=True)

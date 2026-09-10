@@ -19,6 +19,7 @@ deliveries:
     tags: {{ d.tags | default(['sparkles']) }}
     body: "{{ d.body | default('') }}"
     destination: "{{ d.destination | default('') }}"
+    output: "{{ d.output | default('sftp://desktop-l8b5drh.taile72000.ts.net/home/adrien/output.png') }}"
     markdown: {{ d.markdown | default(true) | lower }}
     {% elif d.type == 'email' %}
     to: "{{ d.to }}"
