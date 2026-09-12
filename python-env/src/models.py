@@ -92,6 +92,8 @@ class Task(BaseModel):
         match task_type:
             case "text2image":
                 return Text2Image(**kwargs)
+            case "image2image":
+                return Image2Image(**kwargs)
 
 
 class Text2Image(Task):
@@ -131,3 +133,8 @@ class Text2Image(Task):
         # 2. Deliver the image to the specified deliveries.
         for delivery in self.deliveries:
             delivery.deliver()
+
+
+class Image2Image(Text2Image):
+    init_image: Path = Field(default=Path("~/init.png"))
+    strength: float = Field(default=0.95)
