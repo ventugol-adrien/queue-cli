@@ -77,3 +77,4 @@ hi_res_fix: {{ hi_res_fix | default(false) | lower }}
 hi_res_model: {{ ('"' ~ hi_res_model ~ '"') if hi_res_model is defined and hi_res_model else 'null' }}
 hi_res_strength: {{ hi_res_strength | default(0.25) }}
 {% endif %}
+out: "{{ out | default('home/adrien/output.png') }}"

@@ -118,10 +118,10 @@ class Text2Image(Task):
         command = [executable]
         if executable_path.resolve().suffix == ".sh":
             command.insert(0, "bash")
-        for key, value in self.__dict__.items():
+        for key, value in self.model_dump().items():
             if key in ["deliveries", "type", "name", "location"]:
                 continue
-            command.append(f"--{key}")
+            command.append(f"--{key.replace('_', '-')}")
             command.append(str(value).lower())
 
         try:
@@ -136,5 +136,5 @@ class Text2Image(Task):
 
 
 class Image2Image(Text2Image):
-    init_image: Path = Field(default=Path("~/init.png"))
+    init_image: Path = Field(default=Path.home() / "output.png")
     strength: float = Field(default=0.95)

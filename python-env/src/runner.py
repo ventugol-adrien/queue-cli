@@ -1,5 +1,6 @@
 #
 import argparse
+import json
 
 from models import Text2Image, Task, BaseDelivery, Email, Notification
 from yaml_compiler import parse, parse_cli_overrides
@@ -17,7 +18,9 @@ def main():
     runtime_overrides = parse_cli_overrides(extra_cli_flags)
 
     data = parse(known_args.workflow, **runtime_overrides)
-    print(data)
+    print("============ Parsed Workflow Data ============")
+    print(json.dumps(data, indent=4))
+    print("==============================================")
     task_data = {
         **data["definition"],
         **data["task"],
