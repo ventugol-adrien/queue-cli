@@ -112,7 +112,9 @@ class Task(BaseModel):
             case "text2image":
                 return Text2Image(**kwargs)
             case "image2image":
-                return Image2Image(**kwargs)
+                return Image2Image(
+                    **kwargs,
+                )
             case "delivery":
                 return Delivery(**kwargs)
             case _:
@@ -129,6 +131,10 @@ class Lora(BaseModel):
     name: str
     scale: float
 
+    @classmethod
+    def from_array(cls, array: List[dict]) -> List["Lora"]:
+        return [cls(**item) for item in array]
+
 
 class Text2Image(Task):
     model: str
@@ -142,7 +148,12 @@ class Text2Image(Task):
     out: Path = Field(default=Path("./output.png"))
 
     def __call__(
-        self, cli: bool = True, output_path: Path = None, *args, **kwds
+        self,
+        cli: bool = True,
+        dry_run: bool = False,
+        output_path: Path = None,
+        *args,
+        **kwds,
     ) -> None:
         # 1. Use the stable-diffusion cli or API to generate the image, and store it at a path.
         executable = shutil.which("stable-diffusion")
@@ -165,7 +176,11 @@ class Text2Image(Task):
 
             if key == "loras":
                 for lora in value:
-                    command.append(f"--lora {lora.name} --lora-scale {lora.scale}")
+                    command.extend(
+                        shlex.split(
+                            f"--lora {lora.get('name')} --lora-scale {lora.get('scale')}"
+                        )
+                    )
                 continue
 
             command.append(f"--{key.replace('_', '-')}")
@@ -173,13 +188,15 @@ class Text2Image(Task):
 
         try:
             print(f"Running command: {shlex.join(command)}")
-            run(command, check=True)
+            if not dry_run:
+                run(command, check=True)
         except CalledProcessError as e:
             print(f"Error occurred: {e}")
 
         # 2. Deliver the image to the specified deliveries.
         for delivery in self.deliveries:
-            delivery.deliver()
+            if not dry_run:
+                delivery.deliver()
 
 
 class Image2Image(Text2Image):

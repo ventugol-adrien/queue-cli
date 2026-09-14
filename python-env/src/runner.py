@@ -12,6 +12,11 @@ def main():
         description="Compile workflow templates with dynamic CLI overrides"
     )
     parser.add_argument("workflow", help="Workflow YAML file path or name")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Run the workflow in dry-run mode without executing deliveries",
+    )
     known_args, extra_cli_flags = parser.parse_known_args()
 
     # Convert all arbitrary extra CLI flags into dictionary overrides
@@ -24,7 +29,8 @@ def main():
     deliveries = BaseDelivery.from_list(data.get("deliveries", []))
     if data.get("task") is None:
         for delivery in deliveries:
-            delivery.deliver()
+            if not known_args.dry_run:
+                delivery.deliver()
         return
 
     task_data = {
@@ -33,7 +39,7 @@ def main():
         "deliveries": deliveries,
     }
     task: Task = Task.from_dict(task_data["type"], **task_data)
-    task()
+    task(dry_run=known_args.dry_run)
 
 
 if __name__ == "__main__":
