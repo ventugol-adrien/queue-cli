@@ -94,6 +94,16 @@ class Task(BaseModel):
                 return Text2Image(**kwargs)
             case "image2image":
                 return Image2Image(**kwargs)
+            case "delivery":
+                return Delivery(**kwargs)
+            case _:
+                raise ValueError(f"Unsupported task type: {task_type!r}")
+
+
+class Delivery(Task):
+    def __call__(self) -> None:
+        for delivery in self.deliveries:
+            delivery.deliver()
 
 
 class Text2Image(Task):
