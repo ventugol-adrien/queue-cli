@@ -3,10 +3,13 @@ user_input: >-
   {{ user_input | default('') | trim }}
 negative_input: >-
   {{ negative_input | default('') | trim }}
-init_image: {{ init_image}}
+init_image:
+  {% for img in init_image %}
+    - "{{ img }}"
+  {% endfor %}
 strength: {{ strength | default(0.95)}}
 
-steps: {{ steps | default(50) }}
+steps: {{ steps | default(40) }}
 cfg_scale: {{ cfg_scale | default(7.5) }}
 image_seed: {{ image_seed | default(-1) }}
 batch_size: {{ batch_size | default(1) }}

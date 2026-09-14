@@ -7,6 +7,7 @@ PENDING_DIR=${PENDING_DIR:-"$BASE_DIR/pending"}
 STATUS_DIR=${STATUS_DIR:-"$BASE_DIR/status"}
 TASKS_DIR=${TASKS_DIR:-"$BASE_DIR/tasks"}
 STAGING_DIR=${STAGING_DIR:-"$BASE_DIR/.staging"}
+WORKFLOWS_DIR=${WORKFLOWS_DIR:-"$HOME/.config/queue/workflows"}
 
 mkdir -p "$PENDING_DIR" "$STATUS_DIR" "$TASKS_DIR" "$STAGING_DIR"
 
@@ -23,6 +24,9 @@ TARGET_FILE=""
 if [[ "$1" == "-e" || "$1" == "--edit" ]]; then
 	shift
 	TEMPLATE="${1:-}"
+	if [[ -n "$TEMPLATE" && ! -f "$TEMPLATE" && -f "$WORKFLOWS_DIR/$TEMPLATE" ]]; then
+		TEMPLATE="$WORKFLOWS_DIR/$TEMPLATE"
+	fi
 	if [[ -z "$TEMPLATE" || ! -f "$TEMPLATE" ]]; then
 		echo "Error: Template file '$TEMPLATE' does not exist." >&2
 		exit 1
@@ -52,6 +56,9 @@ if [[ "$1" == "-e" || "$1" == "--edit" ]]; then
 	TASK="${TASK% }"
 else
 	# --- Standard Command Enqueue Mode ---
+	if [[ "$1" =~ \.ya?ml$ && ! -f "$1" && -f "$WORKFLOWS_DIR/$1" ]]; then
+		set -- "$WORKFLOWS_DIR/$1" "${@:2}"
+	fi
 	TASK=$(printf '%q ' "$@")
 	TASK="${TASK% }"
 	if [[ "${1:-}" =~ \.ya?ml$ && -f "$1" ]]; then

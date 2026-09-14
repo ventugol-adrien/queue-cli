@@ -4,10 +4,12 @@ definition:
   location: "{{ definition.location | default('desktop') }}"
   type: "{{ definition.type | default('text2image') }}"
 
+{% if task_definition is defined and task_definition %}
 task:
 {% filter indent(2, true) %}
-{% include task_definition | default('stable-diffusion:t2i.yaml.j2') %}
+{% include task_definition %}
 {% endfilter %}
+{% endif %}
 
 deliveries:
   {% for d in deliveries | default([]) %}

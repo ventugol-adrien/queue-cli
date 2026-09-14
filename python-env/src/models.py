@@ -121,6 +121,13 @@ class Text2Image(Task):
         for key, value in self.model_dump().items():
             if key in ["deliveries", "type", "name", "location"]:
                 continue
+
+            if key == "init_image":
+                for img in value:
+                    command.append(f"--{key.replace('_', '-')}")
+                    command.append(str(img))
+                continue
+
             command.append(f"--{key.replace('_', '-')}")
             command.append(str(value).lower())
 
@@ -136,5 +143,5 @@ class Text2Image(Task):
 
 
 class Image2Image(Text2Image):
-    init_image: Path = Field(default=Path.home() / "output.png")
+    init_image: List[Path] = Field(default_factory=list)
     strength: float = Field(default=0.95)

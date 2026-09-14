@@ -81,6 +81,8 @@ Examples:
 
 The enqueue command prints the new job's initial JSON status record. Save the job ID from that output if you need to inspect or restart the job later.
 
+Workflow filenames are resolved first as supplied, then relative to `WORKFLOWS_DIR` (default: `$HOME/.config/queue/workflows`). This applies to `./enqueue.sh -e t2i.yaml` and to a leading `.yaml` or `.yml` argument. Edit mode opens a copy in `$EDITOR` (default: `vim`) and queues it with `task`.
+
 Commands are shell-escaped when written to disk and evaluated by the worker. Treat enqueued commands as trusted local code: the worker executes them with the permissions and environment of the user running it.
 
 ## Check status
@@ -130,6 +132,7 @@ The scripts use these environment variables:
 | `STATUS_DIR` | `enqueue.sh`, `worker.sh`, `restart.sh` | `$HOME/.local/share/queue/status` |
 | `PROC_DIR` | `worker.sh` | `$HOME/.local/share/queue/processing` |
 | `DONE_DIR` | `worker.sh` | `$HOME/.local/share/queue/done` |
+| `WORKFLOWS_DIR` | `enqueue.sh` | `$HOME/.config/queue/workflows` |
 
 For a separate queue instance, set all directory variables consistently before starting the worker and submitting jobs:
 

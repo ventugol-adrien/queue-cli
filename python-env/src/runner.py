@@ -21,10 +21,16 @@ def main():
     print("============ Parsed Workflow Data ============")
     print(json.dumps(data, indent=4))
     print("==============================================")
+    deliveries = BaseDelivery.from_list(data.get("deliveries", []))
+    if data.get("task") is None:
+        for delivery in deliveries:
+            delivery.deliver()
+        return
+
     task_data = {
         **data["definition"],
         **data["task"],
-        "deliveries": BaseDelivery.from_list(data.get("deliveries", [])),
+        "deliveries": deliveries,
     }
     task: Task = Task.from_dict(task_data["type"], **task_data)
     task()
