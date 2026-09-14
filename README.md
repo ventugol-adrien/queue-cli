@@ -81,7 +81,7 @@ Examples:
 
 The enqueue command prints the new job's initial JSON status record. Save the job ID from that output if you need to inspect or restart the job later.
 
-Workflow filenames are resolved first as supplied, then relative to `WORKFLOWS_DIR` (default: `$HOME/.config/queue/workflows`). This applies to `./enqueue.sh -e t2i.yaml` and to a leading `.yaml` or `.yml` argument. Edit mode opens a copy in `$EDITOR` (default: `vim`) and queues it with `task`.
+Workflow filenames are resolved first as supplied, then relative to `WORKFLOWS_DIR`, and finally relative to `$HOME/.local/queue/workflows`. This applies to `./enqueue.sh -e t2i.yaml` and to a leading `.yaml` or `.yml` argument. Edit mode opens a copy in `$EDITOR` (default: `vim`) and queues it with `task`.
 
 Commands are shell-escaped when written to disk and evaluated by the worker. Treat enqueued commands as trusted local code: the worker executes them with the permissions and environment of the user running it.
 

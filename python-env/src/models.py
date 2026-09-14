@@ -4,6 +4,7 @@ from pydantic import Field
 from pathlib import Path
 import shutil
 import shlex
+import mimetypes
 from typing import Optional
 from subprocess import run, CalledProcessError, CompletedProcess
 
@@ -57,24 +58,42 @@ class Notification(BaseDelivery):
     tags: List[str] = Field(default_factory=list)
     markdown: bool = Field(default=True)
     output: str = Field(default="./output.png")
+    attachment: str = Field(default="")
 
     def deliver(self, *args, **kwargs) -> None:
-        cmd = ["curl"]
+        cmd = ["curl", "-X", "POST"]
         if self.title:
             cmd.extend(["-H", f"Title: {self.title}"])
         if self.destination:
             cmd.extend(["-H", f"X-Target: {self.destination}"])
-        if self.body:
-            cmd.extend(["-d", self.body, self.endpoint])
-        if self.output:
+        if self.output and not self.attachment:
             cmd.extend(
                 [
                     "-H",
                     f"Click: {self.output}",
                 ]
             )
-        if self.markdown:
+        if self.attachment:
+            content_type = (
+                mimetypes.guess_type(self.attachment)[0] or "application/octet-stream"
+            )
+            cmd.extend(
+                [
+                    "-H",
+                    f"Filename: {Path(self.attachment).name}",
+                    "-H",
+                    f"Content-Type: {content_type}",
+                    "--data-binary",
+                    f"@{self.attachment}",
+                ]
+            )
+        elif self.body:
+            cmd.extend(["-d", self.body])
+            if self.markdown:
+                cmd.extend(["-H", "Content-Type: text/markdown"])
+        elif self.markdown:
             cmd.extend(["-H", "Content-Type: text/markdown"])
+        cmd.append(self.endpoint)
 
         print(f"Running command: {shlex.join(cmd)}")
         run(cmd, check=True)
@@ -106,10 +125,16 @@ class Delivery(Task):
             delivery.deliver()
 
 
+class Lora(BaseModel):
+    name: str
+    scale: float
+
+
 class Text2Image(Task):
     model: str
     prompt: str = Field(default="", alias="user_input")
     steps: int = Field(default=40)
+    loras: List[Lora] = Field(default_factory=list)
     cfg: float = Field(default=7.0, alias="cfg_scale")
     width: int = Field(default=512)
     height: int = Field(default=512)
@@ -136,6 +161,11 @@ class Text2Image(Task):
                 for img in value:
                     command.append(f"--{key.replace('_', '-')}")
                     command.append(str(img))
+                continue
+
+            if key == "loras":
+                for lora in value:
+                    command.append(f"--lora {lora.name} --lora-scale {lora.scale}")
                 continue
 
             command.append(f"--{key.replace('_', '-')}")

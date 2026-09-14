@@ -22,6 +22,7 @@ TASK_DEF_DIR = Path(
 WORKFLOWS_DIR = Path(
     os.getenv("WORKFLOWS_DIR", str(PROJECT_ROOT / "workflows"))
 ).resolve()
+USER_WORKFLOWS_DIR = Path.home() / ".config" / "queue" / "workflows"
 
 # Multi-path loader: Jinja searches TEMPLATES_DIR first, then TASK_DEF_DIR
 jinja_env = Environment(
@@ -43,20 +44,22 @@ def deep_update(source: dict, overrides: dict) -> dict:
 
 
 def resolve_workflow_path(path_input: str | Path) -> Path:
-    """Resolves workflow file from CWD or falls back to WORKFLOWS_DIR."""
+    """Resolves workflow file from CWD or configured and user workflow directories."""
     path = Path(path_input)
 
     # 1. Direct path check (absolute or relative to current terminal CWD)
     if path.exists():
         return path.resolve()
 
-    # 2. Check within WORKFLOWS_DIR
-    fallback_path = WORKFLOWS_DIR / path.name
-    if fallback_path.exists():
-        return fallback_path.resolve()
+    # 2. Check configured and user workflow directories
+    for workflows_dir in (WORKFLOWS_DIR, USER_WORKFLOWS_DIR):
+        fallback_path = workflows_dir / path.name
+        if fallback_path.exists():
+            return fallback_path.resolve()
 
     raise FileNotFoundError(
-        f"Workflow file '{path_input}' not found in current directory or {WORKFLOWS_DIR}"
+        f"Workflow file '{path_input}' not found in current directory, "
+        f"{WORKFLOWS_DIR}, or {USER_WORKFLOWS_DIR}"
     )
 
 
