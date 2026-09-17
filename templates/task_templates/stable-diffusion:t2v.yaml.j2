@@ -1,0 +1,52 @@
+model: "{{ model | default('lightq8') }}"
+user_input: >-
+  {{ user_input | default('') | trim }}
+negative_input: >-
+  {{ negative_input | default('') | trim }}
+
+steps: {{ steps | default(30) }}
+cfg_scale: {{ cfg_scale | default(7.5) }}
+image_seed: {{ image_seed | default(-1) }}
+batch_size: {{ batch_size | default(1) }}
+width: {{ width | default(384) }}
+height: {{ height | default(688) }}
+frames: {{ frames | default(65) }}
+fps: {{ fps | default(30) }}
+
+{% if loras is defined and loras %}
+loras:
+  {% for lora in loras %}
+  - name: "{{ lora.name }}"
+    scale: {{ lora.scale | default(0.5) }}
+  {% endfor %}
+{% else %}
+loras: []
+{% endif %}
+
+{% if ip_image is defined and ip_image is not none %}
+ip_image: "{{ ip_image }}"
+ip_scale: {{ ip_scale | default(1.0) }}
+{% endif %}
+
+{% if edges_map is defined and edges_map is not none %}
+edges_map: "{{ edges_map }}"
+edges_map_scale: {{ edges_map_scale | default(0.8) }}
+{% endif %}
+
+{% if depth_map is defined and depth_map is not none %}
+depth_map: "{{ depth_map }}"
+depth_map_scale: {{ depth_map_scale | default(0.8) }}
+{% endif %}
+
+{% if pose_map is defined and pose_map is not none %}
+pose_map: "{{ pose_map }}"
+pose_map_scale: {{ pose_map_scale | default(0.8) }}
+{% endif %}
+
+upscale: {{ upscale | default(1.0) }}
+hi_res_fix: {{ hi_res_fix | default(false) | lower }}
+{% if hi_res_fix | default(false) %}
+hi_res_model: {{ ('"' ~ hi_res_model ~ '"') if hi_res_model is defined and hi_res_model else 'null' }}
+hi_res_strength: {{ hi_res_strength | default(0.25) }}
+{% endif %}
+out: "{{ out | default('home/adrien/output.png') }}"

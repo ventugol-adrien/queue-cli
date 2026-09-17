@@ -115,6 +115,10 @@ class Task(BaseModel):
                 return Image2Image(
                     **kwargs,
                 )
+            case "text2video":
+                return Text2Video(
+                    **kwargs,
+                )
             case "delivery":
                 return Delivery(**kwargs)
             case _:
@@ -202,3 +206,60 @@ class Text2Image(Task):
 class Image2Image(Text2Image):
     init_image: List[Path] = Field(default_factory=list)
     strength: float = Field(default=0.95)
+
+
+class Text2Video(Task):
+    model: str = Field(default="minimax_fp8")
+    frames: int = Field(default=124)
+    fps: int = Field(default=24)
+    prompt: str = Field(default="", alias="user_input")
+    steps: int = Field(default=8)
+    loras: List[Lora] = Field(default_factory=list)
+    cfg: float = Field(default=1.0, alias="cfg_scale")
+    width: int = Field(default=352)
+    height: int = Field(default=192)
+    seed: int = Field(default=42, alias="image_seed")
+    out: Path = Field(default=Path("./output.png"))
+
+    def __call__(
+        self,
+        cli: bool = True,
+        dry_run: bool = False,
+        output_path: Path = None,
+        *args,
+        **kwds,
+    ) -> None:
+        executable = shutil.which("stable-video")
+        if executable is None:
+            raise FileNotFoundError("stable-video CLI was not found on PATH")
+
+        executable_path = Path(executable)
+        command = [executable]
+        if executable_path.resolve().suffix == ".sh":
+            command.insert(0, "bash")
+        for key, value in self.model_dump().items():
+            if key in ["deliveries", "type", "name", "location"]:
+                continue
+
+            if key == "loras":
+                for lora in value:
+                    command.extend(
+                        shlex.split(
+                            f"--lora {lora.get('name')} --lora-scale {lora.get('scale')}"
+                        )
+                    )
+                continue
+
+            command.append(f"--{key.replace('_', '-')}")
+            command.append(str(value).lower())
+        try:
+            print(f"Running command: {shlex.join(command)}")
+            if not dry_run:
+                run(command, check=True)
+        except CalledProcessError as e:
+            print(f"Error occurred: {e}")
+
+        # 2. Deliver the image to the specified deliveries.
+        for delivery in self.deliveries:
+            if not dry_run:
+                delivery.deliver()
