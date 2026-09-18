@@ -4,6 +4,7 @@ user_input: >-
 negative_input: >-
   {{ negative_input | default('') | trim }}
 
+image: "{{ image | default('') | trim }}"
 steps: {{ steps | default(8) }}
 cfg_scale: {{ cfg_scale | default(1.0) }}
 image_seed: {{ image_seed | default(-1) }}
@@ -12,6 +13,7 @@ width: {{ width | default(352) }}
 height: {{ height | default(192) }}
 frames: {{ frames | default(124) }}
 fps: {{ fps | default(24) }}
+
 
 {% if loras is defined and loras %}
 loras:

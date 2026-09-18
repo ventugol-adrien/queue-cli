@@ -78,6 +78,7 @@ def parse_cli_overrides(raw_args: list[str]) -> dict:
     Parses arbitrary CLI flags into typed nested dictionaries.
     Supports:
       - Direct flags: --steps 25
+            - Hyphenated flags: --user-input maps to user_input
       - Dot notation: --definition.name "My Run"
       - Booleans:     --lightning (sets True) or --lightning false
       - Types:        auto-coerces numbers, booleans, strings, and lists
@@ -104,7 +105,7 @@ def parse_cli_overrides(raw_args: list[str]) -> dict:
                 i += 1
 
             # Expand dot-notation (e.g., definition.location -> {'definition': {'location': '...'}})
-            keys = [subkey.strip() for subkey in key.split(".")]
+            keys = [subkey.strip().replace("-", "_") for subkey in key.split(".")]
             cursor = overrides
             for subkey in keys[:-1]:
                 cursor = cursor.setdefault(subkey, {})
