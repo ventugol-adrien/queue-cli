@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import List
+from typing import Any, Dict, List, cast
 from pydantic import Field
 from pathlib import Path
 import shutil
@@ -7,6 +7,8 @@ import shlex
 import mimetypes
 from typing import Optional
 from subprocess import run, CalledProcessError, CompletedProcess
+from jinja2 import Template
+import time
 
 
 class BaseDelivery(BaseModel):
@@ -23,6 +25,19 @@ class BaseDelivery(BaseModel):
     @classmethod
     def from_list(cls, deliveries: List[dict]) -> List["BaseDelivery"]:
         return [cls.from_dict(**delivery) for delivery in deliveries]
+
+    def render(self, context: dict) -> "BaseDelivery":
+        def _render_val(val: Any) -> Any:
+            if isinstance(val, str):
+                return Template(val).render(**context)
+            elif isinstance(val, list):
+                return [_render_val(item) for item in val]
+            elif isinstance(val, dict):
+                return {k: _render_val(v) for k, v in val.items()}
+            return val
+
+        rendered = {k: _render_val(v) for k, v in self.model_dump().items()}
+        return self.__class__(**rendered)
 
     def deliver(*args, **kwargs) -> None:
         raise NotImplementedError("Deliver method must be implemented by subclasses")
@@ -99,6 +114,14 @@ class Notification(BaseDelivery):
         run(cmd, check=True)
 
 
+class TaskResult(BaseModel):
+    success: bool
+    duration: float = Field(default=0.0)
+    output_paths: List[Path] = Field(default_factory=list)
+    error: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
 class Task(BaseModel):
     model_config = {"arbitrary_types_allowed": True, "extra": "ignore"}
     name: str
@@ -128,6 +151,22 @@ class Task(BaseModel):
             case _:
                 raise ValueError(f"Unsupported task type: {task_type!r}")
 
+    def __call__(self, dry_run: bool = False) -> TaskResult:
+        start = time.perf_counter()
+        try:
+            result = self.execute(dry_run=dry_run)
+        except Exception as exc:
+            # Calls the SUBCLASS implementation of build_result!
+            result = self.build_result(success=False, error=str(exc))
+
+        result.duration = round(time.perf_counter() - start, 2)
+        return result
+
+    def execute(self, dry_run: bool = False) -> TaskResult:
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement the execute method."
+        )
+
 
 class Delivery(Task):
     def __call__(self) -> None:
@@ -144,6 +183,9 @@ class Lora(BaseModel):
         return [cls(**item) for item in array]
 
 
+class Text2ImageResult(TaskResult): ...
+
+
 class Text2Image(Task):
     model: str
     prompt: str = Field(default="", alias="user_input")
@@ -153,17 +195,22 @@ class Text2Image(Task):
     width: int = Field(default=512)
     height: int = Field(default=512)
     seed: int = Field(default=42, alias="image_seed")
-    out: Path = Field(default=Path("./output.png"))
+    out: Path = Field(default=Path(Path.home() / f"output_{int(time.time())}.png"))
 
-    def __call__(
-        self,
-        cli: bool = True,
-        dry_run: bool = False,
-        output_path: Path = None,
-        *args,
-        **kwds,
-    ) -> None:
-        # 1. Use the stable-diffusion cli or API to generate the image, and store it at a path.
+    def build_result(
+        self, success: bool = True, error: Optional[str] = None
+    ) -> Text2ImageResult:
+        """Single source of truth for constructing this task's result."""
+        return Text2ImageResult(
+            success=success,
+            output_paths=[self.out] if success else [],
+            error=error,
+            metadata={
+                "seed": self.seed,
+            },
+        )
+
+    def execute(self, dry_run: bool = False) -> Text2ImageResult:
         executable = shutil.which("stable-diffusion")
         if executable is None:
             raise FileNotFoundError("stable-diffusion CLI was not found on PATH")
@@ -172,16 +219,15 @@ class Text2Image(Task):
         command = [executable]
         if executable_path.resolve().suffix == ".sh":
             command.insert(0, "bash")
+
         for key, value in self.model_dump().items():
             if key in ["deliveries", "type", "name", "location"]:
                 continue
-
             if key == "init_image":
                 for img in value:
                     command.append(f"--{key.replace('_', '-')}")
                     command.append(str(img))
                 continue
-
             if key == "loras":
                 for lora in value:
                     command.extend(
@@ -190,26 +236,36 @@ class Text2Image(Task):
                         )
                     )
                 continue
-
             command.append(f"--{key.replace('_', '-')}")
             command.append(str(value).lower())
 
-        try:
-            print(f"Running command: {shlex.join(command)}")
-            if not dry_run:
-                run(command, check=True)
-        except CalledProcessError as e:
-            print(f"Error occurred: {e}")
+        print(f"Running command: {shlex.join(command)}")
+        if not dry_run:
+            # If this exits non-zero, it raises CalledProcessError straight to Task.__call__
+            run(command, check=True)
 
-        # 2. Deliver the image to the specified deliveries.
-        for delivery in self.deliveries:
-            if not dry_run:
-                delivery.deliver()
+        # Happy path: Simply call your single factory method
+        return self.build_result(success=True)
+
+
+class Image2ImageResult(Text2ImageResult): ...
 
 
 class Image2Image(Text2Image):
-    init_image: List[Path] = Field(default_factory=list)
-    strength: float = Field(default=0.95)
+
+    def build_result(
+        self, success: bool = True, error: Optional[str] = None
+    ) -> Image2ImageResult:
+        """Single source of truth for constructing this task's result."""
+        base_result = super().build_result(success=success, error=error)
+        return Image2ImageResult(**base_result.model_dump())
+
+    def execute(self, dry_run: bool = False) -> Image2ImageResult:
+        return cast(Image2ImageResult, super().execute(dry_run=dry_run))
+
+
+class Text2VideoResult(TaskResult):
+    size: int = Field(default=0)
 
 
 class Text2Video(Task):
@@ -225,14 +281,14 @@ class Text2Video(Task):
     seed: int = Field(default=42, alias="image_seed")
     out: Path = Field(default=Path("./output.png"))
 
-    def __call__(
+    def execute(
         self,
         cli: bool = True,
         dry_run: bool = False,
         output_path: Path = None,
         *args,
         **kwds,
-    ) -> None:
+    ) -> Text2VideoResult:
         executable = shutil.which("stable-video")
         if executable is None:
             raise FileNotFoundError("stable-video CLI was not found on PATH")
@@ -261,18 +317,43 @@ class Text2Video(Task):
 
             command.append(f"--{key.replace('_', '-')}")
             command.append(str(value).lower())
-        try:
-            print(f"Running command: {shlex.join(command)}")
-            if not dry_run:
-                run(command, check=True)
-        except CalledProcessError as e:
-            print(f"Error occurred: {e}")
+        print(f"Running command: {shlex.join(command)}")
+        if not dry_run:
+            # If this exits non-zero, it raises CalledProcessError straight to Task.__call__
+            run(command, check=True)
 
-        # 2. Deliver the image to the specified deliveries.
-        for delivery in self.deliveries:
-            if not dry_run:
-                delivery.deliver()
+        # Happy path: Simply call your single factory method
+        return self.build_result(success=True)
+
+
+class Image2VideoResult(Text2VideoResult): ...
 
 
 class Image2Video(Text2Video):
     image: List[Path] = Field(default_factory=list)
+
+    def build_result(
+        self, success: bool = True, error: Optional[str] = None
+    ) -> Image2VideoResult:
+        """Single source of truth for constructing this task's result."""
+        base_result = super().build_result(success=success, error=error)
+        return Image2VideoResult(**base_result.model_dump())
+
+    def execute(
+        self,
+        cli: bool = True,
+        dry_run: bool = False,
+        output_path: Path = None,
+        *args,
+        **kwds,
+    ) -> Image2VideoResult:
+        return cast(
+            Image2VideoResult,
+            super().execute(
+                cli=cli,
+                dry_run=dry_run,
+                output_path=output_path,
+                *args,
+                **kwds,
+            ),
+        )

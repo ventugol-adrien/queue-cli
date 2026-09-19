@@ -39,7 +39,18 @@ def main():
         "deliveries": deliveries,
     }
     task: Task = Task.from_dict(task_data["type"], **task_data)
-    task(dry_run=known_args.dry_run)
+    result = task(dry_run=known_args.dry_run)
+
+    context = {
+        "definition": data.get("definition", {}),
+        "task": task.model_dump(exclude={"deliveries"}),
+        "result": result.model_dump(),
+    }
+
+    for delivery in deliveries:
+        rendered = delivery.render(context)
+        if not known_args.dry_run:
+            rendered.deliver()
 
 
 if __name__ == "__main__":
