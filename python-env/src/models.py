@@ -279,7 +279,27 @@ class Text2Video(Task):
     width: int = Field(default=352)
     height: int = Field(default=192)
     seed: int = Field(default=42, alias="image_seed")
-    out: Path = Field(default=Path("./output.png"))
+    out: Path = Field(default_factory=Path)
+
+    def build_result(
+        self, success: bool = True, error: Optional[str] = None
+    ) -> Text2VideoResult:
+        """Single source of truth for constructing this task's result."""
+
+        def _get_size() -> int:
+            if self.out.exists():
+                return self.out.stat().st_size
+            return 0
+
+        return Text2VideoResult(
+            size=_get_size(),
+            success=success,
+            output_paths=[self.out] if success else [],
+            error=error,
+            metadata={
+                "seed": self.seed,
+            },
+        )
 
     def execute(
         self,
