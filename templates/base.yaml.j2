@@ -19,7 +19,7 @@ deliveries:
     title: "{{ d.title | default(definition.name) }}"
     priority: {{ d.priority | default(3) }}
     tags: {{ d.tags | default(['sparkles']) }}
-    body: "{{ d.body | default('') }}"
+    body: {{ d.body | default('') | tojson }}
     destination: "{{ d.destination | default('') }}"
     {% if d.output is defined and d.output %}
     output: "{{ d.output | default('sftp://desktop-l8b5drh.taile72000.ts.net/home/adrien/output.png') }}"
@@ -31,7 +31,7 @@ deliveries:
     {% elif d.type == 'email' %}
     to: "{{ d.to }}"
     subject: "{{ d.subject }}"
-    body: "{{ d.body | default('') }}"
+    body: {{ d.body | default('') | tojson }}
     attachments: {{ d.attachments | default([]) }}
     {% elif d.type == 'download' %}
     path: "{{ d.path | default('/tmp/downloads') }}"

@@ -19,6 +19,7 @@ fi
 
 JOB_ID="$(date +'%Y%m%d_%H%M%S_%N')_$$"
 TARGET_FILE=""
+RUNNER_ARGS=()
 
 # --- Interactive Edit Mode ---
 if [[ "$1" == "-e" || "$1" == "--edit" ]]; then
@@ -49,6 +50,7 @@ if [[ "$1" == "-e" || "$1" == "--edit" ]]; then
 	# Atomically move the edited task into durable task storage
 	mv "$TMP_STAGING" "$FINAL_TASK"
 	TARGET_FILE="$FINAL_TASK"
+	RUNNER_ARGS=("$@")
 
 	# Construct execution command targeting the runner binary
 	RUNNER_CMD=("task" "$FINAL_TASK" "$@")
@@ -63,6 +65,7 @@ else
 	TASK="${TASK% }"
 	if [[ "${1:-}" =~ \.ya?ml$ && -f "$1" ]]; then
 		TARGET_FILE="$1"
+		RUNNER_ARGS=("${@:2}")
 	fi
 fi
 
@@ -70,6 +73,14 @@ FOLLOW=0
 if [[ "$*" =~ (^|[[:space:]])(-f|--follow)($|[[:space:]]) ]]; then
 	FOLLOW=1
 fi
+
+TASK_ARGS=()
+for argument in "${RUNNER_ARGS[@]}"; do
+	if [[ "$argument" != "-f" && "$argument" != "--follow" ]]; then
+		TASK_ARGS+=("$argument")
+	fi
+done
+ARGS_JSON=$(jq -cn --args '$ARGS.positional' -- "${TASK_ARGS[@]}")
 
 # Extract location using yq (checks nested values.definition or root definition)
 LOCATION="local"
@@ -91,6 +102,7 @@ if [[ "$LOCATION" == "desktop" ]]; then
 
 	# 3. Enqueue directly into desktop's pending lane and initialize remote status log
 	ssh "$REMOTE_HOST" "
+		printf '%s\n' $(printf '%q' "$ARGS_JSON") > $REMOTE_QUEUE/tasks/$JOB_ID.args.json &&
 		echo $(printf '%q' "$TASK") > $REMOTE_QUEUE/pending/$JOB_ID
 		jq -nc \
 			--arg timestamp \"\$(date +'%Y-%m-%d %H:%M:%S')\" \
@@ -119,6 +131,7 @@ if [[ "$LOCATION" == "desktop" ]]; then
 fi
 
 # --- Dispatch Route: Local Queue ---
+printf '%s\n' "$ARGS_JSON" >"$TASKS_DIR/$JOB_ID.args.json"
 echo "$TASK" >"$PENDING_DIR/$JOB_ID"
 
 jq -nc \
