@@ -4,7 +4,18 @@ user_input: >-
 negative_input: >-
   {{ negative_input | default('') | trim }}
 
-image: "{{ image | default('') | trim }}"
+{% if image is defined and image %}
+image:
+  {% if image is string %}
+  - "{{ image | trim }}"
+  {% else %}
+  {% for img in image %}
+  - "{{ img }}"
+  {% endfor %}
+  {% endif %}
+{% else %}
+image: []
+{% endif %}
 steps: {{ steps | default(8) }}
 cfg_scale: {{ cfg_scale | default(1.0) }}
 image_seed: {{ image_seed | default(-1) }}

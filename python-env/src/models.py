@@ -119,6 +119,10 @@ class Task(BaseModel):
                 return Text2Video(
                     **kwargs,
                 )
+            case "image2video":
+                return Image2Video(
+                    **kwargs,
+                )
             case "delivery":
                 return Delivery(**kwargs)
             case _:
@@ -250,6 +254,11 @@ class Text2Video(Task):
                     )
                 continue
 
+            if key == "image":
+                for image in value:
+                    command.extend(["--image", str(image)])
+                continue
+
             command.append(f"--{key.replace('_', '-')}")
             command.append(str(value).lower())
         try:
@@ -263,3 +272,7 @@ class Text2Video(Task):
         for delivery in self.deliveries:
             if not dry_run:
                 delivery.deliver()
+
+
+class Image2Video(Text2Video):
+    image: List[Path] = Field(default_factory=list)
