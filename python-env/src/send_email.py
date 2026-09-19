@@ -4,42 +4,68 @@ import base64
 import json
 import mimetypes
 import os
+import shutil
+import subprocess
 import sys
 import urllib.parse
+import urllib.error
 import urllib.request
 from email.message import EmailMessage
 from pathlib import Path
 
 CONFIG_DIR = Path.home() / ".config/queue"
 TOKEN_FILE = CONFIG_DIR / "token.json"
+AUTH_SCRIPT = Path(__file__).resolve().with_name("auth.py")
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 SEND_URL = "https://gmail.googleapis.com/gmail/v1/users/me/messages/send"
+
+
+def reauthenticate():
+    auth_command = shutil.which("email_auth")
+    command = [auth_command] if auth_command else [sys.executable, str(AUTH_SCRIPT)]
+    subprocess.run(command, check=True)
+
 
 def get_access_token():
     if not TOKEN_FILE.exists():
         print(f"Error: No token found at {TOKEN_FILE}", file=sys.stderr)
-        print("Please run auth.py first to authorize your Gmail account.", file=sys.stderr)
+        print(
+            "Please run auth.py first to authorize your Gmail account.", file=sys.stderr
+        )
         sys.exit(1)
 
-    with open(TOKEN_FILE) as f:
-        tokens = json.load(f)
+    for attempt in range(2):
+        with open(TOKEN_FILE) as f:
+            tokens = json.load(f)
 
-    # Silent token refresh using stored refresh_token
-    payload = urllib.parse.urlencode({
-        "client_id": tokens["client_id"],
-        "client_secret": tokens["client_secret"],
-        "refresh_token": tokens["refresh_token"],
-        "grant_type": "refresh_token"
-    }).encode()
+        payload = urllib.parse.urlencode(
+            {
+                "client_id": tokens["client_id"],
+                "client_secret": tokens["client_secret"],
+                "refresh_token": tokens["refresh_token"],
+                "grant_type": "refresh_token",
+            }
+        ).encode()
 
-    req = urllib.request.Request(TOKEN_URL, data=payload, method="POST")
-    try:
-        with urllib.request.urlopen(req) as resp:
-            data = json.loads(resp.read().decode())
-            return data["access_token"]
-    except Exception as e:
-        print(f"Error refreshing access token: {e}", file=sys.stderr)
-        sys.exit(1)
+        req = urllib.request.Request(TOKEN_URL, data=payload, method="POST")
+        try:
+            with urllib.request.urlopen(req) as resp:
+                data = json.loads(resp.read().decode())
+                return data["access_token"]
+        except urllib.error.HTTPError as e:
+            if e.code == 400 and attempt == 0:
+                print(
+                    "Access token refresh failed; starting re-authentication...",
+                    file=sys.stderr,
+                )
+                reauthenticate()
+                continue
+            print(f"Error refreshing access token: {e}", file=sys.stderr)
+            sys.exit(1)
+        except Exception as e:
+            print(f"Error refreshing access token: {e}", file=sys.stderr)
+            sys.exit(1)
+
 
 def send_mail(to_addr, subject, body, attachment_path=None):
     access_token = get_access_token()
@@ -59,7 +85,7 @@ def send_mail(to_addr, subject, body, attachment_path=None):
             file_data,
             maintype=maintype,
             subtype=subtype,
-            filename=Path(attachment_path).name
+            filename=Path(attachment_path).name,
         )
 
     raw_msg = base64.urlsafe_b64encode(msg.as_bytes()).decode()
@@ -77,6 +103,7 @@ def send_mail(to_addr, subject, body, attachment_path=None):
         print(f"Failed to send email: {e}", file=sys.stderr)
         sys.exit(1)
 
+
 def main():
     """
     Main cli parser
@@ -84,11 +111,14 @@ def main():
     parser = argparse.ArgumentParser(description="Standalone Gmail API Dispatcher")
     parser.add_argument("-t", "--to", required=True, help="Recipient email address")
     parser.add_argument("-s", "--subject", required=True, help="Email subject line")
-    parser.add_argument("-b", "--body", default="Task completed successfully.", help="Email body")
+    parser.add_argument(
+        "-b", "--body", default="Task completed successfully.", help="Email body"
+    )
     parser.add_argument("-a", "--attach", default=None, help="Path to file attachment")
 
     args = parser.parse_args()
     send_mail(args.to, args.subject, args.body, args.attach)
+
 
 if __name__ == "__main__":
     main()
