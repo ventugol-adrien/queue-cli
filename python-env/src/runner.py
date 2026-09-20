@@ -49,6 +49,9 @@ def main():
 
     for delivery in deliveries:
         rendered = delivery.render(context)
+        print("=" * 40)
+        print(rendered.model_dump_json(indent=4))
+        print("=" * 40)
         if not known_args.dry_run:
             rendered.deliver()
 
