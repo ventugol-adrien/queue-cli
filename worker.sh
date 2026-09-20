@@ -47,7 +47,7 @@ run() {
 		fi
 		mapfile -d '' -t task_args < <(jq -j '.[] | . + "\u0000"' "$args_file")
 	fi
-	task "$TASKS_DIR/$JOB_ID.yaml" "${task_args[@]}"
+	PYTHONUNBUFFERED=1 task "$TASKS_DIR/$JOB_ID.yaml" "${task_args[@]}"
 	CONCLUSION=$?
 }
 
