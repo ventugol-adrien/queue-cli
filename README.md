@@ -19,16 +19,15 @@ pending -> processing -> done
 - Bash
 - `jq`
 - `inotifywait` from `inotify-tools`
-- `notify-send` for worker progress notifications
 - Python 3.14 or newer and `uv` for the optional Gmail helpers
 
 On Debian or Ubuntu, install the shell dependencies with:
 
 ```bash
-sudo apt install jq inotify-tools libnotify-bin
+sudo apt install jq inotify-tools
 ```
 
-The worker needs a desktop notification session for progress notifications. The queue itself can still be used without notifications if `worker.sh` is adapted for a headless environment.
+The worker does not require a desktop notification session. Notifications are handled by workflow deliveries.
 
 ## Installation
 
