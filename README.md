@@ -84,7 +84,77 @@ Workflow filenames are resolved first as supplied, then relative to `WORKFLOWS_D
 
 Commands are shell-escaped when written to disk and evaluated by the worker. Treat enqueued commands as trusted local code: the worker executes them with the permissions and environment of the user running it.
 
+## Scaleway Commands
+
+The Python package exposes these standalone lifecycle commands:
+
+```bash
+scw-start render-s.yaml --dry-run
+scw-start render-s.yaml
+scw-save --dry-run
+scw-save
+scw-stop --dry-run
+scw-stop
+```
+
+`scw-start` accepts an instance definition path or a filename from the existing
+template search paths, including `~/.config/queue/instances/*/`. It selects and
+creates the instance using the same models as `task`, records its configuration,
+and prints the server ID. The server stays running until explicitly stopped.
+
+`scw-save [server-id]` stops the server and saves a reusable image without
+terminating it. `scw-stop [server-id]` honors the recorded `save` setting, then
+terminates the server and its volumes/IP and prints the estimated compute cost.
+As with the workflow context, termination is attempted even if saving fails.
+
+When no ID is given, save/stop print and select the oldest non-deleted record
+from `~/.local/share/scaleway/instances.db`. Stopped-but-not-terminated servers
+remain eligible. Use `--zone fr-par-2` to filter selection or specify an ID:
+
+```bash
+scw-save SERVER_ID --zone fr-par-2
+scw-stop SERVER_ID --zone fr-par-2
+```
+
+Dry runs print lifecycle commands without changing resources or the database;
+start still performs read-only catalog/image lookups. Save/stop restore the
+recorded configuration without selecting a new type. Records from before
+configuration persistence cannot be restored by these commands.
+
+Reinstall the editable Python package to register new entry points:
+
+```bash
+uv pip install --python python-env/.venv/bin/python --no-deps -e ./python-env
+```
+
+The scripts are installed in `python-env/.venv/bin`; activate that environment
+or put that directory on PATH.
+
 ## Check status
+
+### Instance Accounting
+
+Instance records are stored in `~/.local/share/<provider>/instances.db`
+(`scaleway` for Scaleway). The `instances` table retains server and backup image
+IDs, `created_at`, `stopped_at`, `terminated_at` (Unix seconds), `uptime_seconds`,
+`hourly_price`, `currency`, and `run_cost`.
+
+Uptime is measured locally from the start of a successful create command until
+stop completes (when saving) or termination completes. Active records contain
+the elapsed time at their last update, not a continuously refreshed counter.
+Run cost is an estimate: `uptime_seconds * hourly_price / 3600`, using the
+catalog rate captured at selection. It excludes storage, IP charges, taxes,
+and provider billing adjustments. Missing historical timing or pricing stays
+NULL rather than being reported as zero. Dry runs write no records.
+
+On first use, if the new database does not exist, the old
+`~/.local/state/<provider>/instances.db` is copied and its schema upgraded.
+The original database is retained.
+
+```bash
+sqlite3 -header -column ~/.local/share/scaleway/instances.db \
+	'SELECT server_id, uptime_seconds, run_cost, currency, deleted FROM instances;'
+```
 
 Show counts for each queue lane:
 

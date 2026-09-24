@@ -19,14 +19,24 @@ TEMPLATES_DIR = Path(
 TASK_DEF_DIR = Path(
     os.getenv("TASK_DEF_DIR", str(PROJECT_ROOT / "templates/task_templates"))
 ).resolve()
+INSTANCE_DEF_DIR = Path(
+    os.getenv("INSTANCE_DEF_DIR", str(PROJECT_ROOT / "templates/instance_templates"))
+).resolve()
 WORKFLOWS_DIR = Path(
     os.getenv("WORKFLOWS_DIR", str(PROJECT_ROOT / "workflows"))
 ).resolve()
 USER_WORKFLOWS_DIR = Path.home() / ".config" / "queue" / "workflows"
+USER_INSTANCES_DIR = Path.home() / ".config" / "queue" / "instances"
 
-# Multi-path loader: Jinja searches TEMPLATES_DIR first, then TASK_DEF_DIR
 jinja_env = Environment(
-    loader=FileSystemLoader([TEMPLATES_DIR, TASK_DEF_DIR]),
+    loader=FileSystemLoader(
+        [
+            TEMPLATES_DIR,
+            TASK_DEF_DIR,
+            INSTANCE_DEF_DIR,
+            *sorted(path for path in USER_INSTANCES_DIR.glob("*") if path.is_dir()),
+        ]
+    ),
     undefined=StrictUndefined,
     trim_blocks=True,
     lstrip_blocks=True,

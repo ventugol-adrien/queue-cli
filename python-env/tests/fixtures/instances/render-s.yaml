@@ -1,0 +1,9 @@
+provider: "scaleway"
+type: "RENDER-S"
+image: "base"
+zone: "fr-par-2"
+timeout_minutes: 5
+save: false
+tags:
+  - ephemeral
+  - worker

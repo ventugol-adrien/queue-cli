@@ -1,8 +1,38 @@
+{% set definition = definition | default({}) %}
+{% set instance = instance | default({}) %}
 definition:
   name: "{{ definition.name | default('Unnamed Job') }}"
   description: "{{ definition.description | default('') }}"
   location: "{{ definition.location | default('desktop') }}"
   type: "{{ definition.type | default('text2image') }}"
+
+{# Provisioning block only rendered if running remotely #}                                                                                                                                                    
+{% if definition.location is defined and definition.location != 'desktop' %}                                                                                                                                  
+instance:                                                                                                                                                                                                     
+  {% if instance_definition is defined and instance_definition %}                                                                                                                                             
+  {# Allow including a sub-template file for standard instance presets #}                                                                                                                                     
+  {% filter indent(2, true) %}                                                                                                                                                                                
+  {% include instance_definition %}                                                                                                                                                                           
+  {% endfilter %}                                                                                                                                                                                             
+  {% else %}                                                                                                                                                                                                  
+  {# Inline fallback/overrides #}                                                                                                                                                                             
+  provider: {{ instance.provider | default('scaleway') | tojson }}
+  {% if instance.type is defined and instance.type %}
+  type: {{ instance.type | tojson }}
+  {% endif %}
+  image: {{ instance.image | default('base') | tojson }}
+  zone: {{ instance.zone | default('fr-par-2') | tojson }}
+  timeout_minutes: {{ instance.timeout_minutes | default(5) }}
+  save: {{ instance.save | default(false) | tojson }}
+  tags: {{ instance.tags | default(['ephemeral', 'worker']) | tojson }}
+  {% endif %}                                                                                                                                                                                                 
+  metadata: {{ instance.metadata | default({}) | tojson }}
+  {% for field in ['gpu_memory_rng', 'vcpus_rng', 'ram_rng', 'storage_rng', 'bandwidth_rng'] %}
+  {% if instance[field] is defined %}
+  {{ field }}: {{ instance[field] | tojson }}
+  {% endif %}
+  {% endfor %}
+{% endif %}
 
 {% if task_definition is defined and task_definition %}
 task:
@@ -11,6 +41,7 @@ task:
 {% endfilter %}
 {% endif %}
 
+{% if deliveries | default([]) %}
 deliveries:
   {% for d in deliveries | default([]) %}
   - type: "{{ d.type }}"
@@ -37,3 +68,6 @@ deliveries:
     path: "{{ d.path | default('/tmp/downloads') }}"
     {% endif %}
   {% endfor %}
+{% else %}
+deliveries: []
+{% endif %}
