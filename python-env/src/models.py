@@ -261,6 +261,7 @@ class Image2ImageResult(Text2ImageResult): ...
 
 class Image2Image(Text2Image):
     init_image: List[Path] = Field(default_factory=list)
+    strength: float = Field(default=0.8)
 
     def build_result(
         self, success: bool = True, error: Optional[str] = None
