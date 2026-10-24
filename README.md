@@ -282,6 +282,18 @@ illustrious 40 1024 1:1 "scenery,mountain,anime,masterpiece,best quality"
 
 These files are starting points for commands or integrations that you enqueue yourself.
 
+### Quoting template values
+
+The [workflow compiler](python-env/src/yaml_compiler.py) provides `yamlQuote`
+for inline YAML values, including in task templates loaded with `include`.
+It uses PyYAML to quote strings and escape quotes, backslashes, newlines, and
+Unicode (including emoji), while preserving YAML value types. Use it without
+surrounding quotes:
+
+```jinja
+user_input: {{ user_input | default('') | trim | yamlQuote }}
+```
+
 ### Stable Diffusion notification defaults
 
 [The desktop envelope](templates/envelopes/stable-diffusion_desktop.yaml.j2)

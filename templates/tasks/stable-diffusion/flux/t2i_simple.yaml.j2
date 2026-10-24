@@ -1,8 +1,8 @@
-model: {{ model | default('juggernaut') | yamlQuote }}
+model: {{ model | default('flux_fp8') | yamlQuote }}
 user_input: {{ user_input | default('') | trim | yamlQuote }}
 negative_input: {{ negative_input | default('') | trim | yamlQuote }}
 
-steps: {{ steps | default(40) }}
+steps: {{ steps | default(8) }}
 cfg_scale: {{ cfg_scale | default(7.5) }}
 image_seed: {{ image_seed | default(-1) }}
 batch_size: {{ batch_size | default(1) }}

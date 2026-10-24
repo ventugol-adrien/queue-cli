@@ -32,6 +32,17 @@ USER_WORKFLOWS_DIR = Path.home() / ".config" / "queue" / "workflows"
 USER_INSTANCES_DIR = Path.home() / ".config" / "queue" / "instances"
 USER_VOLUME_DEFINITIONS_DIR = Path.home() / ".config" / "queue" / "volume_definitions"
 
+
+def yaml_quote(value: object) -> str:
+    """Serialize an inline YAML value with quoted, escaped strings."""
+    return yaml.safe_dump(
+        value,
+        default_style='"',
+        default_flow_style=True,
+        width=sys.maxsize,
+    ).strip()
+
+
 jinja_env = Environment(
     loader=FileSystemLoader(
         [
@@ -47,6 +58,7 @@ jinja_env = Environment(
     trim_blocks=True,
     lstrip_blocks=True,
 )
+jinja_env.filters["yamlQuote"] = yaml_quote
 
 
 def deep_update(source: dict, overrides: dict) -> dict:
