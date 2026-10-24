@@ -19,6 +19,9 @@ TEMPLATES_DIR = Path(
 TASK_DEF_DIR = Path(
     os.getenv("TASK_DEF_DIR", str(PROJECT_ROOT / "templates/task_templates"))
 ).resolve()
+VOLUME_DEF_DIR = Path(
+    os.getenv("VOLUME_DEF_DIR", str(PROJECT_ROOT / "templates/volume_definitions"))
+).resolve()
 INSTANCE_DEF_DIR = Path(
     os.getenv("INSTANCE_DEF_DIR", str(PROJECT_ROOT / "templates/instance_templates"))
 ).resolve()
@@ -27,13 +30,16 @@ WORKFLOWS_DIR = Path(
 ).resolve()
 USER_WORKFLOWS_DIR = Path.home() / ".config" / "queue" / "workflows"
 USER_INSTANCES_DIR = Path.home() / ".config" / "queue" / "instances"
+USER_VOLUME_DEFINITIONS_DIR = Path.home() / ".config" / "queue" / "volume_definitions"
 
 jinja_env = Environment(
     loader=FileSystemLoader(
         [
             TEMPLATES_DIR,
             TASK_DEF_DIR,
+            VOLUME_DEF_DIR,
             INSTANCE_DEF_DIR,
+            USER_VOLUME_DEFINITIONS_DIR,
             *sorted(path for path in USER_INSTANCES_DIR.glob("*") if path.is_dir()),
         ]
     ),

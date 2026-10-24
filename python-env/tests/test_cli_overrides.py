@@ -55,6 +55,60 @@ class InstanceTemplateTests(unittest.TestCase):
                         tuple(bounds) if field.endswith("_rng") else bounds,
                     )
 
+    def test_volume_config_renders_existing_volume_reference(self):
+        data = self.render(
+            instance={
+                "volume": {
+                    "name": "models-prefetched",
+                    "mount_path": "/mnt/models",
+                }
+            }
+        )
+        request = RemoteInstanceRequest(**data["instance"])
+        self.assertEqual(request.volume.name, "models-prefetched")
+        self.assertEqual(request.volume.mount_path, "/mnt/models")
+
+    def test_instance_volume_reference_template_can_be_included(self):
+        data = self.render(
+            volume_definition="volumes/base_volume.yaml.j2",
+            name="models-prefetched",
+            mount_path="/mnt/models",
+        )
+        volume = RemoteInstanceRequest(**data["instance"]).volume
+        self.assertEqual(volume.name, "models-prefetched")
+        self.assertEqual(volume.mount_path, "/mnt/models")
+        self.assertEqual(volume.ssh_user, "ubuntu")
+
+    def test_volume_build_recipe_template_has_creation_inputs(self):
+        recipe = yaml.safe_load(
+            self.jinja_env.get_template(
+                "volume_definitions/base_volume.yaml.j2"
+            ).render()
+        )
+        from volumes import VolumeBuildDefinition
+
+        definition = VolumeBuildDefinition.model_validate(recipe)
+        self.assertEqual(definition.bucket, "sd-cloud-storage")
+        self.assertEqual(
+            definition.prefixes,
+            ["models/caches/illustrious", "models/sdxl"],
+        )
+        self.assertEqual(definition.size_gb, 50)
+        self.assertFalse(hasattr(definition, "mount_path"))
+
+    def test_illustrious_volume_recipe_matches_bucket_object_paths(self):
+        recipe_path = (
+            Path(__file__).parents[2]
+            / "templates"
+            / "volume_definitions"
+            / "sd_t2i_illustrious.yaml"
+        )
+        recipe = yaml.safe_load(recipe_path.read_text())
+        self.assertEqual(
+            recipe["prefixes"],
+            ["models/caches/illustrious", "models/sdxl/illustrious.safetensors"],
+        )
+
     @patch("models.run")
     def test_inline_h100_request_completes_concrete_instance(self, run_command):
         run_command.return_value = Mock(
@@ -109,6 +163,11 @@ class InstanceTemplateTests(unittest.TestCase):
         self.assertEqual(request.timeout_minutes, 5)
         self.assertFalse(request.save_on_completion)
         self.assertEqual(request.tags, ["ephemeral", "worker"])
+        self.assertEqual(request.gpu_memory_rng, (8, 160))
+        self.assertEqual(request.vcpus_rng, (4, 16))
+        self.assertEqual(request.ram_rng, (16, 64))
+        self.assertEqual(request.storage_rng, (100, 1000))
+        self.assertEqual(request.bandwidth_rng, (100, 5000))
 
     def test_instance_definition_accepts_unprefixed_filename(self):
         short_name = self.render(instance_definition="render-s.yaml")

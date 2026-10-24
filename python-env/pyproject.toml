@@ -18,6 +18,7 @@ email_auth = "auth:main"
 scw-start = "runner:scw_start"
 scw-save = "runner:scw_save"
 scw-stop = "runner:scw_stop"
+scw-volume = "runner:scw_volume"
 
 [build-system]
 requires = ["uv_build>=0.12.5,<0.13.0"]

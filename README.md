@@ -107,6 +107,47 @@ terminating it. `scw-stop [server-id]` honors the recorded `save` setting, then
 terminates the server and its volumes/IP and prints the estimated compute cost.
 As with the workflow context, termination is attempted even if saving fails.
 
+Create a reusable block volume separately from instance startup:
+
+```bash
+scw-volume create sd_t2i_illustrious.yaml
+```
+
+The recipe is loaded from the current directory, `~/.config/scw/volume_definitions/`,
+`~/.config/queue/volume_definitions/`, or the bundled `templates/volume_definitions/`.
+It defines the volume name, bucket, size, and one or more prefixes.
+`scw-volume create`
+provisions the configured volume worker, runs its `build-volume` command,
+terminates the worker, and prints the volume ID and a ready-to-paste instance
+snippet. Prefixes are synced from
+`users/$USER/<prefix>`; each requested prefix must contain files. The worker
+image needs `build-volume`, `scw`, `aws`, `pass`, `jq`, and passwordless sudo,
+plus Scaleway credentials and read-only Object Storage access. The Object
+Storage secret is read on the worker with
+`pass show services/scaleway/access/secret_key`.
+
+Instance definitions reference an existing volume and mountpoint only:
+
+```yaml
+volume:
+	name: models-20260928
+	mount_path: /home/adrien/.local/share/models
+```
+
+Use `id` instead of `name` when preferred. `scw-start` resolves and attaches
+that already-formatted volume, then cloud-init mounts it at `mount_path` without
+formatting it. `scw-stop` continues to delete the instance and everything
+attached to it. Delete a standalone volume with either
+`scw-volume delete --volume-name NAME --yes` or
+`scw-volume delete --volume-id ID --yes`.
+
+If provisioning fails after an operation is created, use the printed recovery
+command to clean up partial resources:
+
+```bash
+scw-stop --operation-id OPERATION_ID
+```
+
 When no ID is given, save/stop print and select the oldest non-deleted record
 from `~/.local/share/scaleway/instances.db`. Stopped-but-not-terminated servers
 remain eligible. Use `--zone fr-par-2` to filter selection or specify an ID:
@@ -117,7 +158,8 @@ scw-stop SERVER_ID --zone fr-par-2
 ```
 
 Dry runs print lifecycle commands without changing resources or the database;
-start still performs read-only catalog/image lookups. Save/stop restore the
+start still performs read-only catalog/image lookups. Volume dry runs do not
+require S3 credentials or access the bucket. Save/stop restore the
 recorded configuration without selecting a new type. Records from before
 configuration persistence cannot be restored by these commands.
 
@@ -239,6 +281,33 @@ illustrious 40 1024 1:1 "scenery,mountain,anime,masterpiece,best quality"
 ```
 
 These files are starting points for commands or integrations that you enqueue yourself.
+
+### Stable Diffusion notification defaults
+
+[The desktop envelope](templates/envelopes/stable-diffusion_desktop.yaml.j2)
+provides success/failure notification titles, tags, Markdown bodies, output
+links, and attachments. Select it with
+`template: "envelopes/stable-diffusion_desktop.yaml.j2"`, as shown in
+[the T2I workflow](definitions/tasks/t2i.yaml).
+
+Add a notification to `values.deliveries` to use these defaults:
+
+```yaml
+deliveries:
+  - type: notification
+    destination: laptop-adrien
+```
+
+Individual delivery fields such as `title`, `body`, `tags`, `output`, and
+`attachment` still override the defaults. Empty strings disable the corresponding
+text/link/attachment fields, and `tags: []` disables tags. Omitting deliveries or
+setting `deliveries: []` sends no notifications.
+
+The envelope preserves its result-dependent Jinja expressions until the task has
+finished, when `definition`, `task`, and `result` are available. Successful jobs
+attach the first result output (falling back to `task.out`); failed jobs send the
+error body without an output link or attachment, so a missing output file cannot
+prevent the failure notification.
 
 ## Gmail notification helpers
 

@@ -7,3 +7,8 @@ save: false
 tags:
   - ephemeral
   - worker
+gpu_memory_rng: [8, 160]
+vcpus_rng: [4, 16]
+ram_rng: [16, 64]
+storage_rng: [100, 1000]
+bandwidth_rng: [100, 5000]

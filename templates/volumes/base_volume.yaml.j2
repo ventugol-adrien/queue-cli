@@ -1,0 +1,6 @@
+{% if name is defined and name %}
+name: {{ name | tojson }}
+{% elif id is defined and id %}
+id: {{ id | tojson }}
+{% endif %}
+mount_path: {{ mount_path | default('') | tojson }}

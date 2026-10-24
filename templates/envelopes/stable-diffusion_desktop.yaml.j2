@@ -1,0 +1,56 @@
+{% set definition = definition | default({}) %}
+{% set instance = instance | default({}) %}
+{# Preserve result-dependent expressions for the post-task delivery render. #}
+{% set notification_body %}{% raw %}{% if result.success -%}
+### Image Rendered ({{ result.duration }}s)
+- **Watch / Stream**: https://mesh-notifications.taile72000.ts.net/attachments/{{ (task.out | string).split('/')[-1] }}
+- **Specs**: ({{ task.width }}x{{ task.height }})
+- **Model**: `{{ task.model }}` ({{ task.steps }} steps, Seed: {{ task.seed }})
+- **Local Path**: `{{ task.out }}`
+- **Prompt**: *{{ task.prompt }}*
+{%- else -%}
+### Image Generation Failed ({{ result.duration }}s)
+- **Error**: `{{ result.error }}`
+- **Model**: `{{ task.model }}` ({{ task.width }}x{{ task.height }}, {{ task.steps }} steps)
+- **Target Path**: `{{ task.out }}`
+- **Attempted Prompt**: *{{ task.prompt }}*
+{%- endif %}{% endraw %}{% endset %}
+definition:
+  name: {{ definition.name | default('Stable Diffusion') | tojson }}
+  description: {{ definition.description | default('generation job') | tojson }}
+  location: {{ definition.location | default('desktop') | tojson }}
+  type: {{ definition.type | default('text2image') | tojson }}
+
+{% if task_definition is defined and task_definition %}
+task:
+{% filter indent(2, true) %}
+{% include task_definition %}
+{% endfilter %}
+{% endif %}
+
+{% if deliveries | default([]) | length %}
+deliveries:
+  {% for d in deliveries | default([]) %}
+  - type: "{{ d.type }}"
+    {% if d.type == 'notification' %}
+    endpoint: {{ d.endpoint | default('https://mesh-notifications.taile72000.ts.net/notifications/desktop-jobs') | tojson }}
+    title: {{ d.title | default("{{ definition.type }} {{ definition.description }} on {{ definition.location }} {% if result.success %}Succeeded.{% else %}Failed.{% endif %} ({{ result.duration }}s)") | tojson }}
+    priority: {{ d.priority | default(3) }}
+    tags: {{ d.tags | default(['desktop', "{{ 'white_check_mark' if result.success else 'rotating_light' }}", "{{ 'sparkles' if result.success else 'x' }}"]) | tojson }}
+    body: {{ d.body | default(notification_body) | tojson }}
+    destination: {{ d.destination | default('') | tojson }}
+    output: {{ d.output | default("{{ 'https://mesh-notifications.taile72000.ts.net/attachments/' ~ (task.out | string).split('/')[-1] if result.success else '' }}") | tojson }}
+    attachment: {{ d.attachment | default("{{ (result.output_paths[0] if result.output_paths else task.out) if result.success else '' }}") | tojson }}
+    markdown: {{ d.markdown | default(true) | lower }}
+    {% elif d.type == 'email' %}
+    to: {{ d.to | tojson }}
+    subject: {{ d.subject | tojson }}
+    body: {{ d.body | default('') | tojson }}
+    attachments: {{ d.attachments | default([]) | tojson }}
+    {% elif d.type == 'download' %}
+    path: {{ d.path | default('/tmp/downloads') | tojson }}
+    {% endif %}
+  {% endfor %}
+{% else %}
+deliveries: []
+{% endif %}

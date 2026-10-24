@@ -1,0 +1,23 @@
+model: {{ model | default('minimax_fp8') | yamlQuote }}
+user_input: {{ user_input | default('') | trim | yamlQuote }}
+negative_input: {{ negative_input | default('') | trim | yamlQuote }}
+
+steps: {{ steps | default(8) }}
+cfg_scale: {{ cfg_scale | default(1.0) }}
+image_seed: {{ image_seed | default(-1) }}
+batch_size: {{ batch_size | default(1) }}
+width: {{ width | default(352) }}
+height: {{ height | default(192) }}
+frames: {{ frames | default(124) }}
+fps: {{ fps | default(24) }}
+
+{% if loras is defined and loras %}
+loras:
+  {% for lora in loras %}
+  - name: {{ lora.name | yamlQuote }}
+    scale: {{ lora.scale | default(0.5) }}
+  {% endfor %}
+{% endif %}
+
+upscale: {{ upscale | default(1.0) }}
+out: {{ out | default('home/adrien/output.mp4') | yamlQuote }}

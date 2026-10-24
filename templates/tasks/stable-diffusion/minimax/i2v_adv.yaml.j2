@@ -1,20 +1,16 @@
-model: "{{ model | default('minimax_fp8') }}"
-user_input: >-
-  {{ user_input | default('') | trim }}
-negative_input: >-
-  {{ negative_input | default('') | trim }}
+model: {{ model | default('minimax_fp8') | yamlQuote }}
+user_input: {{ user_input | default('') | trim | yamlQuote }}
+negative_input: {{ negative_input | default('') | trim | yamlQuote }}
 
 {% if image is defined and image %}
 image:
   {% if image is string %}
-  - "{{ image | trim }}"
+  - {{ image | trim | yamlQuote }}
   {% else %}
   {% for img in image %}
-  - "{{ img }}"
+  - {{ img | yamlQuote }}
   {% endfor %}
   {% endif %}
-{% else %}
-image: []
 {% endif %}
 steps: {{ steps | default(8) }}
 cfg_scale: {{ cfg_scale | default(1.0) }}
@@ -29,37 +25,35 @@ fps: {{ fps | default(24) }}
 {% if loras is defined and loras %}
 loras:
   {% for lora in loras %}
-  - name: "{{ lora.name }}"
+  - name: {{ lora.name | yamlQuote }}
     scale: {{ lora.scale | default(0.5) }}
   {% endfor %}
-{% else %}
-loras: []
 {% endif %}
 
 {% if ip_image is defined and ip_image is not none %}
-ip_image: "{{ ip_image }}"
+ip_image: {{ ip_image | yamlQuote }}
 ip_scale: {{ ip_scale | default(1.0) }}
 {% endif %}
 
 {% if edges_map is defined and edges_map is not none %}
-edges_map: "{{ edges_map }}"
+edges_map: {{ edges_map | yamlQuote }}
 edges_map_scale: {{ edges_map_scale | default(0.8) }}
 {% endif %}
 
 {% if depth_map is defined and depth_map is not none %}
-depth_map: "{{ depth_map }}"
+depth_map: {{ depth_map | yamlQuote }}
 depth_map_scale: {{ depth_map_scale | default(0.8) }}
 {% endif %}
 
 {% if pose_map is defined and pose_map is not none %}
-pose_map: "{{ pose_map }}"
+pose_map: {{ pose_map | yamlQuote }}
 pose_map_scale: {{ pose_map_scale | default(0.8) }}
 {% endif %}
 
 upscale: {{ upscale | default(1.0) }}
 hi_res_fix: {{ hi_res_fix | default(false) | lower }}
 {% if hi_res_fix | default(false) %}
-hi_res_model: {{ ('"' ~ hi_res_model ~ '"') if hi_res_model is defined and hi_res_model else 'null' }}
+hi_res_model: {{ hi_res_model | yamlQuote if hi_res_model is defined and hi_res_model else 'null' }}
 hi_res_strength: {{ hi_res_strength | default(0.25) }}
 {% endif %}
-out: "{{ out | default('home/adrien/output.png') }}"
+out: {{ out | default('home/adrien/output.png') | yamlQuote }}

@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator, model_validator
 from typing import Any, Dict, List, Tuple, cast, Literal
 from pydantic import Field
 from pathlib import Path
@@ -14,6 +14,8 @@ from subprocess import run, CalledProcessError, CompletedProcess
 from jinja2 import Template
 import time
 from uuid import UUID
+import volumes
+import yaml
 
 
 class BaseDelivery(BaseModel):
@@ -386,6 +388,55 @@ class Image2Video(Text2Video):
         )
 
 
+class InstanceVolumeConfig(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    name: Optional[str] = None
+    id: Optional[str] = None
+    mount_path: str
+    ssh_user: str = "ubuntu"
+    ssh_identity_file: Optional[Path] = None
+
+    @model_validator(mode="after")
+    def validate_reference(self):
+        if bool(self.name) == bool(self.id):
+            raise ValueError("volume must specify exactly one of name or id")
+        return self
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None and not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", value):
+            raise ValueError("volume name contains unsupported characters")
+        return value
+
+    @field_validator("id")
+    @classmethod
+    def validate_id(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None and not re.fullmatch(r"[A-Za-z0-9-]{16,}", value):
+            raise ValueError("volume id is invalid")
+        return value
+
+    @field_validator("mount_path")
+    @classmethod
+    def validate_mount_path(cls, value: str) -> str:
+        path = Path(value.strip())
+        if not path.is_absolute() or path == Path("/"):
+            raise ValueError("volume mount_path must be an absolute non-root path")
+        if not re.fullmatch(r"/[A-Za-z0-9._/-]+", str(path)):
+            raise ValueError("volume mount_path may contain only safe path characters")
+        if ".." in path.parts:
+            raise ValueError("volume mount_path cannot contain parent segments")
+        return str(path)
+
+    @field_validator("ssh_user")
+    @classmethod
+    def validate_ssh_user(cls, value: str) -> str:
+        if not re.fullmatch(r"[a-z_][a-z0-9_-]*[$]?", value):
+            raise ValueError("volume ssh_user must be a valid Unix account name")
+        return value
+
+
 class RemoteInstanceRequest(BaseModel):
     model_config = {"extra": "forbid"}
     provider: Literal["scaleway"] = Field(default="scaleway")
@@ -394,26 +445,48 @@ class RemoteInstanceRequest(BaseModel):
     timeout_minutes: int = Field(default=5, gt=0)
     save_on_completion: bool = Field(default=False, alias="save")
     image: str = Field(default="base", description="The image to use for the instance")
+    cloud_init: Dict[str, Any] = Field(default_factory=dict, alias="cloud-init")
+    volume: Optional[InstanceVolumeConfig] = None
     metadata: Dict[str, Any] = Field(
         default_factory=dict, description="Additional metadata for the instance"
     )
     tags: List[str] = Field(default_factory=lambda: ["ephemeral", "worker"])
     gpu_memory_rng: Tuple[Optional[int], Optional[int]] = Field(
-        default=(8, 160), description="Range of GPU memory required for the instance"
+        default=(None, None),
+        description="Range of GPU memory required for the instance",
     )
     vcpus_rng: Tuple[Optional[int], Optional[int]] = Field(
-        default=(4, 16), description="Range of vCPUs required for the instance"
+        default=(None, None), description="Range of vCPUs required for the instance"
     )
     ram_rng: Tuple[Optional[int], Optional[int]] = Field(
-        default=(16, 64), description="Range of RAM required for the instance"
+        default=(None, None), description="Range of RAM required for the instance"
     )
     storage_rng: Tuple[Optional[int], Optional[int]] = Field(
-        default=(100, 1000), description="Range of storage required for the instance"
+        default=(None, None),
+        description="Range of local storage supported by the instance",
     )
     bandwidth_rng: Tuple[Optional[int], Optional[int]] = Field(
-        default=(100, 5000),
+        default=(None, None),
         description="Range of network bandwidth required for the instance",
     )
+
+    @model_validator(mode="after")
+    def validate_volume_cloud_init(self):
+        if self.volume is None:
+            return self
+        mounts = self.cloud_init.get("mounts", [])
+        if not isinstance(mounts, list):
+            raise ValueError("cloud-init mounts must be a list when volume is enabled")
+        if any(
+            isinstance(entry, (list, tuple))
+            and len(entry) > 1
+            and entry[1] == self.volume.mount_path
+            for entry in mounts
+        ):
+            raise ValueError(
+                f"cloud-init already configures mount path {self.volume.mount_path!r}"
+            )
+        return self
 
     @classmethod
     def from_dict(cls, data: dict) -> "RemoteInstanceRequest":
@@ -564,6 +637,8 @@ class ScalewayInstanceRequest(RemoteInstanceRequest):
             timeout_minutes=self.timeout_minutes,
             save_on_completion=self.save_on_completion,
             metadata=self.metadata,
+            cloud_init=self.cloud_init,
+            volume=self.volume,
             **resources,
         )
 
@@ -578,6 +653,8 @@ class RemoteInstance(BaseModel):
     zone: str = Field(default="fr-par-2")
     timeout_minutes: int = 5
     save_on_completion: bool = False
+    cloud_init: Dict[str, Any] = Field(default_factory=dict)
+    volume: Optional[InstanceVolumeConfig] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
     tags: List[str] = Field(default_factory=lambda: ["ephemeral", "worker"])
     gpu_memory: int = Field(
@@ -629,6 +706,27 @@ class ScalewayInstance(RemoteInstance):
     terminated_at: Optional[float] = None
     uptime_seconds: Optional[float] = None
     run_cost: Optional[float] = None
+    operation_id: Optional[str] = None
+    volume_id: Optional[str] = None
+    volume_uuid: Optional[str] = None
+    helper_server_id: Optional[str] = None
+
+    @classmethod
+    def load_operation(cls, operation_id: str) -> "ScalewayInstance":
+        operation = volumes.get_operation(operation_id)
+        if operation is None:
+            raise ValueError(f"No volume operation {operation_id!r} found")
+        configuration = operation["config"]
+        configuration.update(
+            {
+                "operation_id": operation["operation_id"],
+                "server_id": operation["target_server_id"],
+                "helper_server_id": operation["helper_server_id"],
+                "volume_id": operation["volume_id"],
+                "volume_uuid": operation["volume_uuid"],
+            }
+        )
+        return cls.model_validate(configuration)
 
     @classmethod
     def load(
@@ -671,6 +769,8 @@ class ScalewayInstance(RemoteInstance):
         if not record["config_json"]:
             raise ValueError(f"Instance {server_id!r} has no saved configuration")
         configuration = json.loads(record["config_json"])
+        if record.get("server_type") is not None:
+            configuration["type"] = record["server_type"]
         for field in (
             "server_id",
             "zone",
@@ -710,6 +810,7 @@ class ScalewayInstance(RemoteInstance):
                         PRIMARY KEY (zone, server_id)
                     )""")
                 columns = {
+                    "server_type": "TEXT",
                     "created_at": "REAL",
                     "stopped_at": "REAL",
                     "terminated_at": "REAL",
@@ -727,6 +828,10 @@ class ScalewayInstance(RemoteInstance):
                         connection.execute(
                             f"ALTER TABLE instances ADD COLUMN {column} {column_type}"
                         )
+                connection.execute("""UPDATE instances
+                    SET server_type = json_extract(config_json, '$.type')
+                    WHERE server_type IS NULL AND config_json IS NOT NULL
+                    AND json_valid(config_json)""")
                 previous = connection.execute(
                     "SELECT created_at, stopped_at, terminated_at, hourly_price, currency "
                     "FROM instances WHERE zone = ? AND server_id = ?",
@@ -769,10 +874,11 @@ class ScalewayInstance(RemoteInstance):
                     (self.zone, self.server_id, self.saved_image_id, int(deleted)),
                 )
                 connection.execute(
-                    """UPDATE instances SET created_at = ?, stopped_at = ?, terminated_at = ?,
+                    """UPDATE instances SET server_type = ?, created_at = ?, stopped_at = ?, terminated_at = ?,
                     uptime_seconds = ?, hourly_price = ?, currency = ?, run_cost = ?, config_json = ?
                     WHERE zone = ? AND server_id = ?""",
                     (
+                        self.type,
                         self.created_at,
                         self.stopped_at,
                         self.terminated_at,
@@ -801,7 +907,37 @@ class ScalewayInstance(RemoteInstance):
             f"image={self.image}",
             "ip=new",
         ]
-        command.extend(f"tags.{index}={tag}" for index, tag in enumerate(self.tags))
+        if self.volume is not None:
+            if self.dry_run:
+                self.volume_id = self.volume.id or f"<volume:{self.volume.name}>"
+                print(
+                    f"[dry-run] attach existing volume {self.volume.name or self.volume.id} "
+                    f"at {self.volume.mount_path}"
+                )
+            else:
+                self.volume_id = volumes.resolve_block_volume(
+                    volume_id=self.volume.id,
+                    name=self.volume.name,
+                    zone=self.zone,
+                    run_command=run,
+                )
+            command.append(f"additional-volumes.0={self.volume_id}")
+            if not self.dry_run:
+                command.append(
+                    "cloud-init="
+                    + volumes.mount_existing_volume_cloud_init(
+                        self.volume.mount_path, self.volume_id, self.cloud_init
+                    )
+                )
+        elif self.cloud_init:
+            command.append(
+                "cloud-init=#cloud-config\n"
+                + yaml.safe_dump(self.cloud_init, sort_keys=False)
+            )
+        target_tags = list(self.tags)
+        if self.operation_id:
+            target_tags.append(f"queue-prefetch-{self.operation_id}")
+        command.extend(f"tags.{index}={tag}" for index, tag in enumerate(target_tags))
         command.extend([f"zone={self.zone}", "-o", "json"])
         if self.dry_run:
             print(f"[dry-run] {shlex.join(command)}")
@@ -818,6 +954,11 @@ class ScalewayInstance(RemoteInstance):
             ]
             print(f"[dry-run] {shlex.join(wait_command)}")
             return
+        if self.volume is not None:
+            print(
+                f"[volume] Creating target server with volume {self.volume_id} attached...",
+                flush=True,
+            )
         started_at = time.time()
         try:
             result = run(
@@ -829,40 +970,99 @@ class ScalewayInstance(RemoteInstance):
             )
         except CalledProcessError as exc:
             detail = (exc.stderr or exc.stdout or "No error output from scw").strip()
-            raise RuntimeError(
+            error = RuntimeError(
                 f"Scaleway server creation failed (exit {exc.returncode}): {detail}"
-            ) from exc
+            )
+            if self.operation_id:
+                error.add_note(
+                    f"Recover resources with scw-stop --operation-id {self.operation_id}"
+                )
+            raise error from exc
         server = json.loads(result.stdout)
         if not server.get("id"):
-            raise ValueError("Scaleway create response did not contain a server ID")
+            error = ValueError("Scaleway create response did not contain a server ID")
+            if self.operation_id:
+                error.add_note(
+                    f"Recover resources with scw-stop --operation-id {self.operation_id}"
+                )
+            raise error
         self.server_id = server["id"]
         self.created_at = started_at
         self.stopped_at = None
         self.terminated_at = None
         self.uptime_seconds = None
         self.run_cost = None
+        if self.operation_id:
+            volumes.update_operation(
+                self.operation_id,
+                target_server_id=self.server_id,
+                state="starting_target",
+            )
+        if self.volume is not None:
+            print(
+                f"[volume] Target server {self.server_id} created; waiting for it to start...",
+                flush=True,
+            )
         self._record_state()
-        result = run(
-            [
-                "scw",
-                "instance",
-                "server",
-                "wait",
-                self.server_id,
-                f"timeout={self.timeout_minutes}m",
-                f"zone={self.zone}",
-                "-o",
-                "json",
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=self.timeout_minutes * 60,
-        )
+        try:
+            result = run(
+                [
+                    "scw",
+                    "instance",
+                    "server",
+                    "wait",
+                    self.server_id,
+                    f"timeout={self.timeout_minutes}m",
+                    f"zone={self.zone}",
+                    "-o",
+                    "json",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=self.timeout_minutes * 60,
+            )
+        except Exception as exc:
+            if self.operation_id:
+                exc.add_note(
+                    f"Recover resources with scw-stop --operation-id {self.operation_id}"
+                )
+            raise
         if json.loads(result.stdout).get("state") != "running":
-            raise RuntimeError(
+            error = RuntimeError(
                 f"Scaleway server {self.server_id} did not reach running state"
             )
+            if self.operation_id:
+                error.add_note(
+                    f"Recover resources with scw-stop --operation-id {self.operation_id}"
+                )
+            raise error
+        if self.volume is not None:
+            try:
+                print(
+                    f"[volume] Verifying mount {self.volume.mount_path} on target...",
+                    flush=True,
+                )
+                volumes.verify_target_mount(
+                    server_id=self.server_id,
+                    zone=self.zone,
+                    config=self.volume.model_dump(mode="json"),
+                    timeout_minutes=self.timeout_minutes,
+                    run_command=run,
+                )
+            except Exception as exc:
+                raise
+            print(
+                f"[volume] Mount {self.volume.mount_path} verified.",
+                flush=True,
+            )
+
+    def _print_volume_dry_run(self) -> None:
+        print(
+            f"[dry-run] resolve existing volume {self.volume.name or self.volume.id} "
+            f"in {self.zone}"
+        )
+        print(f"[dry-run] attach and mount it at {self.volume.mount_path}")
 
     def save(self) -> None:
         """Stop the server and preserve its disks as a reusable image."""
@@ -907,6 +1107,8 @@ class ScalewayInstance(RemoteInstance):
             print(f"[dry-run] {shlex.join(get_command)}")
             print(f"[dry-run, if not stopped] {shlex.join(stop_command)}")
             print(f"[dry-run] {shlex.join(backup_command)}")
+            if self.volume is not None:
+                print("[dry-run] scw block volume delete <prefetched-volume-id>")
             return
         result = run(
             [
@@ -943,6 +1145,50 @@ class ScalewayInstance(RemoteInstance):
                 text=True,
                 timeout=self.timeout_minutes * 60,
             )
+        if self.volume_id:
+            attached = server.get("volumes", server.get("Volumes"))
+            if isinstance(attached, dict):
+                attached_items = [
+                    item for item in attached.values() if isinstance(item, dict)
+                ]
+            elif isinstance(attached, list):
+                attached_items = [item for item in attached if isinstance(item, dict)]
+            else:
+                raise RuntimeError(
+                    "Cannot verify attached volumes before creating a backup"
+                )
+            prefetch_attached = any(
+                item.get("id") == self.volume_id for item in attached_items
+            )
+            root_volume_ids = [
+                item.get("id")
+                for item in attached_items
+                if item.get("id") and item.get("id") != self.volume_id
+            ]
+            if prefetch_attached and not root_volume_ids:
+                raise RuntimeError("Refusing to detach every volume before backup")
+            if prefetch_attached:
+                detach_command = [
+                    "scw",
+                    "instance",
+                    "server",
+                    "update",
+                    self.server_id,
+                    *(
+                        f"volume-ids.{index}={volume_id}"
+                        for index, volume_id in enumerate(root_volume_ids)
+                    ),
+                    f"zone={self.zone}",
+                    "-o",
+                    "json",
+                ]
+                run(
+                    detach_command,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=self.timeout_minutes * 60,
+                )
         if self.stopped_at is None:
             self.stopped_at = time.time()
         self._record_state()
@@ -971,7 +1217,10 @@ class ScalewayInstance(RemoteInstance):
 
     def delete(self) -> None:
         """Delete the server, its volumes and IP, but retain saved images."""
-        if not self.server_id and not self.dry_run:
+        if (
+            not any((self.server_id, self.helper_server_id, self.volume_id))
+            and not self.dry_run
+        ):
             return
         if self.timeout_minutes <= 0:
             raise ValueError("timeout_minutes must be positive")
@@ -988,17 +1237,148 @@ class ScalewayInstance(RemoteInstance):
             "-o",
             "json",
         ]
+        stopped_command = [
+            "scw",
+            "instance",
+            "server",
+            "delete",
+            self.server_id or "<server-id>",
+            "with-volumes=all",
+            "with-ip=true",
+            "--wait",
+            f"zone={self.zone}",
+            "-o",
+            "json",
+        ]
+        if self.stopped_at is not None:
+            command = stopped_command
         if self.dry_run:
-            print(f"[dry-run] {shlex.join(command)}")
+            if self.server_id or not (self.helper_server_id or self.volume_id):
+                print(f"[dry-run] {shlex.join(command)}")
+                if self.stopped_at is None:
+                    print(
+                        f"[dry-run, if already stopped] {shlex.join(stopped_command)}"
+                    )
+            if self.helper_server_id:
+                volumes.delete_helper(
+                    self.helper_server_id, zone=self.zone, dry_run=True
+                )
+            if self.volume_id:
+                volumes.delete_block_volume(
+                    self.volume_id, zone=self.zone, dry_run=True
+                )
+            elif self.volume is not None:
+                print("[dry-run] scw block volume delete <prefetched-volume-id>")
             return
-        run(
-            command,
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=self.timeout_minutes * 60,
-        )
-        self._record_state(deleted=True)
+        if self.server_id:
+            if self.volume_id and self.stopped_at is not None:
+                try:
+                    server = volumes.get_server(
+                        self.server_id, zone=self.zone, run_command=run
+                    )
+                except CalledProcessError as exc:
+                    if not volumes._is_not_found(exc):
+                        raise
+                    server = None
+                attached = (server or {}).get("volumes") or {}
+                remaining = [
+                    item.get("id")
+                    for item in attached.values()
+                    if isinstance(item, dict)
+                    and item.get("id")
+                    and item.get("id") != self.volume_id
+                ]
+                if any(
+                    item.get("id") == self.volume_id
+                    for item in attached.values()
+                    if isinstance(item, dict)
+                ):
+                    if not remaining:
+                        raise RuntimeError(
+                            "Cannot detach the ephemeral disk without preserving the root volume"
+                        )
+                    run(
+                        [
+                            "scw",
+                            "instance",
+                            "server",
+                            "update",
+                            self.server_id,
+                            *(
+                                f"volume-ids.{index}={volume_id}"
+                                for index, volume_id in enumerate(remaining)
+                            ),
+                            f"zone={self.zone}",
+                            "-o",
+                            "json",
+                        ],
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                        timeout=self.timeout_minutes * 60,
+                    )
+            try:
+                run(
+                    command,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=self.timeout_minutes * 60,
+                )
+            except CalledProcessError as exc:
+                detail = (
+                    exc.stderr or exc.stdout or "No error output from scw"
+                ).strip()
+                if volumes._is_not_found(exc):
+                    detail = ""
+                else:
+                    try:
+                        payload = json.loads(detail)
+                    except (ValueError, TypeError):
+                        payload = {}
+                    stopped_error = isinstance(
+                        payload, dict
+                    ) and "invalidstate 'stopped' for the action 'terminate'" in str(
+                        payload.get("error", "")
+                    )
+                    if command == stopped_command or not stopped_error:
+                        exc.add_note(
+                            f"Scaleway termination of {self.server_id} in {self.zone}: {detail}"
+                        )
+                        raise
+                    try:
+                        run(
+                            stopped_command,
+                            check=True,
+                            capture_output=True,
+                            text=True,
+                            timeout=self.timeout_minutes * 60,
+                        )
+                    except CalledProcessError as fallback_error:
+                        if not volumes._is_not_found(fallback_error):
+                            fallback_detail = (
+                                fallback_error.stderr
+                                or fallback_error.stdout
+                                or "No error output from scw"
+                            ).strip()
+                            fallback_error.add_note(
+                                f"Scaleway deletion of stopped server {self.server_id} in {self.zone}: {fallback_detail}"
+                            )
+                            raise
+        if self.helper_server_id:
+            volumes.delete_helper(
+                self.helper_server_id,
+                zone=self.zone,
+                volume_id=self.volume_id,
+                run_command=run,
+            )
+            self.helper_server_id = None
+        if self.volume_id:
+            volumes.delete_block_volume(self.volume_id, zone=self.zone, run_command=run)
+        if self.server_id:
+            self._record_state(deleted=True)
+        if self.operation_id:
+            volumes.update_operation(self.operation_id, state="deleted")
         uptime = (
             f"{self.uptime_seconds:.2f}s"
             if self.uptime_seconds is not None
@@ -1009,7 +1389,10 @@ class ScalewayInstance(RemoteInstance):
             if self.run_cost is not None
             else "unavailable"
         )
-        print(
-            f"Server {self.server_id} terminated. Uptime: {uptime}. Estimated compute cost: {cost}"
-        )
+        if self.server_id:
+            print(
+                f"Server {self.server_id} terminated. Uptime: {uptime}. Estimated compute cost: {cost}"
+            )
         self.server_id = None
+        self.helper_server_id = None
+        self.volume_id = None

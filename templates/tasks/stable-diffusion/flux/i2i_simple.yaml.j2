@@ -1,0 +1,28 @@
+model: {{ model | default('juggernaut') | yamlQuote }}
+user_input: {{ user_input | default('') | trim | yamlQuote }}
+negative_input: {{ negative_input | default('') | trim | yamlQuote }}
+{% if init_image is defined and init_image %}
+init_image:
+  {% for img in init_image %}
+    - {{ img | yamlQuote }}
+  {% endfor %}
+{% endif %}
+strength: {{ strength | default(0.95)}}
+
+steps: {{ steps | default(40) }}
+cfg_scale: {{ cfg_scale | default(7.5) }}
+image_seed: {{ image_seed | default(-1) }}
+batch_size: {{ batch_size | default(1) }}
+width: {{ width | default(1024) }}
+height: {{ height | default(1024) }}
+
+{% if loras is defined and loras %}
+loras:
+  {% for lora in loras %}
+  - name: {{ lora.name | yamlQuote }}
+    scale: {{ lora.scale | default(0.5) }}
+  {% endfor %}
+{% endif %}
+
+upscale: {{ upscale | default(1.0) }}
+out: {{ out | default('home/adrien/output.png') | yamlQuote }}

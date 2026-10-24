@@ -1,0 +1,7 @@
+name: {{ name | default('models-prefetched') | tojson }}
+bucket: {{ bucket | default('sd-cloud-storage') | tojson }}
+size_gb: {{ size_gb | default(50) }}
+prefixes: {{ prefixes | default(['models/caches/illustrious', 'models/sdxl']) | tojson }}
+zone: {{ zone | default('fr-par-2') | tojson }}
+region: {{ region | default('fr-par') | tojson }}
+user: {{ user | default('adrien') | tojson }}

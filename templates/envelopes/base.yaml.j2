@@ -1,19 +1,19 @@
 {% set definition = definition | default({}) %}
 {% set instance = instance | default({}) %}
 definition:
-  name: "{{ definition.name | default('Unnamed Job') }}"
-  description: "{{ definition.description | default('') }}"
-  location: "{{ definition.location | default('desktop') }}"
-  type: "{{ definition.type | default('text2image') }}"
+  name: {{ definition.name | default('Unnamed Job') | tojson }}
+  description: {{ definition.description | default('') | tojson }}
+  location: {{ definition.location | default('desktop') | tojson }}
+  type: {{ definition.type | default('text2image') | tojson }}
 
 {# Provisioning block only rendered if running remotely #}                                                                                                                                                    
 {% if definition.location is defined and definition.location != 'desktop' %}                                                                                                                                  
 instance:                                                                                                                                                                                                     
   {% if instance_definition is defined and instance_definition %}                                                                                                                                             
   {# Allow including a sub-template file for standard instance presets #}                                                                                                                                     
-  {% filter indent(2, true) %}                                                                                                                                                                                
-  {% include instance_definition %}                                                                                                                                                                           
-  {% endfilter %}                                                                                                                                                                                             
+{% filter indent(2, true) %}
+{% include instance_definition %}
+{% endfilter %}
   {% else %}                                                                                                                                                                                                  
   {# Inline fallback/overrides #}                                                                                                                                                                             
   provider: {{ instance.provider | default('scaleway') | tojson }}
@@ -24,6 +24,7 @@ instance:
   zone: {{ instance.zone | default('fr-par-2') | tojson }}
   timeout_minutes: {{ instance.timeout_minutes | default(5) }}
   save: {{ instance.save | default(false) | tojson }}
+  cloud-init: {{ instance.cloud_init | default({}) | tojson }}
   tags: {{ instance.tags | default(['ephemeral', 'worker']) | tojson }}
   {% endif %}                                                                                                                                                                                                 
   metadata: {{ instance.metadata | default({}) | tojson }}
@@ -32,6 +33,14 @@ instance:
   {{ field }}: {{ instance[field] | tojson }}
   {% endif %}
   {% endfor %}
+  {% if instance.volume is defined and instance.volume %}
+  volume: {{ instance.volume | tojson }}
+  {% elif volume_definition is defined and volume_definition %}
+  volume:
+{% filter indent(4, true) %}
+{% include volume_definition %}
+{% endfilter %}
+  {% endif %}
 {% endif %}
 
 {% if task_definition is defined and task_definition %}
@@ -41,31 +50,31 @@ task:
 {% endfilter %}
 {% endif %}
 
-{% if deliveries | default([]) %}
+{% if deliveries | default([]) | length %}
 deliveries:
   {% for d in deliveries | default([]) %}
   - type: "{{ d.type }}"
     {% if d.type == 'notification' %}
-    endpoint: "{{ d.endpoint | default('https://desktop.adriens-apis.io/notify/jobs') }}"
-    title: "{{ d.title | default(definition.name) }}"
+    endpoint: {{ d.endpoint | default('https://mesh-notifications.taile72000.ts.net/notifications/desktop-jobs') | tojson }}
+    title: {{ d.title | default(definition.name | default('Unnamed Job')) | tojson }}
     priority: {{ d.priority | default(3) }}
-    tags: {{ d.tags | default(['sparkles']) }}
+    tags: {{ d.tags | default(['sparkles']) | tojson }}
     body: {{ d.body | default('') | tojson }}
-    destination: "{{ d.destination | default('') }}"
+    destination: {{ d.destination | default('') | tojson }}
     {% if d.output is defined and d.output %}
-    output: "{{ d.output | default('sftp://desktop-l8b5drh.taile72000.ts.net/home/adrien/output.png') }}"
+    output: {{ d.output | default('sftp://desktop-l8b5drh.taile72000.ts.net/home/adrien/output.png') | tojson }}
     {% endif %}
     {% if d.attachment is defined and d.attachment %}
-    attachment: "{{ d.attachment | default('') }}"
+    attachment: {{ d.attachment | default('') | tojson }}
     {% endif %}
     markdown: {{ d.markdown | default(true) | lower }}
     {% elif d.type == 'email' %}
-    to: "{{ d.to }}"
-    subject: "{{ d.subject }}"
+    to: {{ d.to | tojson }}
+    subject: {{ d.subject | tojson }}
     body: {{ d.body | default('') | tojson }}
-    attachments: {{ d.attachments | default([]) }}
+    attachments: {{ d.attachments | default([]) | tojson }}
     {% elif d.type == 'download' %}
-    path: "{{ d.path | default('/tmp/downloads') }}"
+    path: {{ d.path | default('/tmp/downloads') | tojson }}
     {% endif %}
   {% endfor %}
 {% else %}

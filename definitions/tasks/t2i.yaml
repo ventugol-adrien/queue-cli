@@ -1,0 +1,17 @@
+template: "envelopes/stable-diffusion_desktop.yaml.j2"
+
+values:
+  definition:
+    name: "T2I"
+    description: "Basic text-to-image pipeline executed on local desktop"
+    type: "text2image"
+
+  task_definition: "tasks/stable-diffusion/sdxl/t2i_simple.yaml.j2"
+
+  user_input: "beach, sunny, greece, 8mm lens, bokeh, masterpiece, best quality"
+  negative_input: "blurry, low quality, artifacts, distorted, watermark"
+  out: "./beach.png"
+
+  deliveries:
+    - type: "notification"
+      destination: "laptop-adrien"

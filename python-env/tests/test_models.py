@@ -1,12 +1,15 @@
 import io
 import json
+import os
 import sqlite3
 import unittest
-from contextlib import closing, redirect_stdout
+from contextlib import closing, redirect_stderr, redirect_stdout
 from pathlib import Path
 from subprocess import CalledProcessError, TimeoutExpired
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
+
+import yaml
 
 from models import (
     Email,
@@ -15,7 +18,8 @@ from models import (
     ScalewayInstance,
     ScalewayInstanceRequest,
 )
-from runner import main, scw_start, scw_save, scw_stop
+from runner import main, scw_start, scw_save, scw_stop, scw_volume
+import volumes
 
 
 class ScalewayInstanceTests(unittest.TestCase):
@@ -100,6 +104,40 @@ class ScalewayInstanceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "No recorded"):
             ScalewayInstance.load("server-id", "fr-par-1")
 
+    def test_schema_migration_backfills_server_type(self):
+        database_path = self.home / ".local" / "share" / "scaleway" / "instances.db"
+        database_path.parent.mkdir(parents=True)
+        existing = self.instance(server_id="old-server", type="H100-SXM-8-80G")
+        with closing(sqlite3.connect(database_path)) as connection:
+            connection.execute("""CREATE TABLE instances (
+                    zone TEXT NOT NULL,
+                    server_id TEXT NOT NULL,
+                    saved_image_id TEXT,
+                    deleted INTEGER NOT NULL DEFAULT 0,
+                    created_at REAL,
+                    stopped_at REAL,
+                    terminated_at REAL,
+                    uptime_seconds REAL,
+                    hourly_price REAL,
+                    currency TEXT,
+                    run_cost REAL,
+                    config_json TEXT,
+                    PRIMARY KEY (zone, server_id)
+                )""")
+            connection.execute(
+                "INSERT INTO instances (zone, server_id, config_json) VALUES (?, ?, ?)",
+                (existing.zone, existing.server_id, existing.model_dump_json()),
+            )
+            connection.commit()
+
+        self.instance(server_id="new-server")._record_state()
+
+        with closing(sqlite3.connect(database_path)) as connection:
+            row = connection.execute(
+                "SELECT server_type FROM instances WHERE server_id = 'old-server'"
+            ).fetchone()
+        self.assertEqual(row, ("H100-SXM-8-80G",))
+
     def test_load_rejects_missing_and_terminated_instances(self):
         with self.assertRaisesRegex(ValueError, "No recorded"):
             ScalewayInstance.load("missing")
@@ -133,7 +171,11 @@ class ScalewayInstanceTests(unittest.TestCase):
     @patch("models.run")
     def test_stores_uptime_and_estimated_cost_after_termination(self, run_command):
         instance = self.instance(
-            server_id="server-id", created_at=1000, hourly_price=2, currency="EUR"
+            server_id="server-id",
+            type="H100-SXM-8-80G",
+            created_at=1000,
+            hourly_price=2,
+            currency="EUR",
         )
         output = io.StringIO()
         with patch("models.time.time", return_value=2800), redirect_stdout(output):
@@ -144,9 +186,9 @@ class ScalewayInstanceTests(unittest.TestCase):
         database_path = self.home / ".local" / "share" / "scaleway" / "instances.db"
         with closing(sqlite3.connect(database_path)) as connection:
             row = connection.execute(
-                "SELECT uptime_seconds, run_cost, hourly_price, currency, terminated_at, deleted FROM instances"
+                "SELECT server_type, uptime_seconds, run_cost, hourly_price, currency, terminated_at, deleted FROM instances"
             ).fetchone()
-        self.assertEqual(row, (1800, 1, 2, "EUR", 2800, 1))
+        self.assertEqual(row, ("H100-SXM-8-80G", 1800, 1, 2, "EUR", 2800, 1))
 
     @patch("models.run")
     def test_termination_reports_unavailable_cost_without_accounting(self, run_command):
@@ -377,12 +419,96 @@ class ScalewayInstanceTests(unittest.TestCase):
         instance.delete()
         run_command.assert_called_once()
 
-    @patch("models.run", side_effect=CalledProcessError(1, "scw"))
+    @patch("models.run")
+    def test_delete_uses_delete_for_recorded_stopped_server(self, run_command):
+        instance = self.instance(
+            server_id="server-id", stopped_at=1000, saved_image_id="backup-id"
+        )
+        instance.delete()
+        run_command.assert_called_once_with(
+            [
+                "scw",
+                "instance",
+                "server",
+                "delete",
+                "server-id",
+                "with-volumes=all",
+                "with-ip=true",
+                "--wait",
+                "zone=fr-par-2",
+                "-o",
+                "json",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        self.assertIsNone(instance.server_id)
+        self.assertEqual(instance.saved_image_id, "backup-id")
+
+    @patch("models.run")
+    def test_terminate_falls_back_only_for_stopped_state(self, run_command):
+        error = CalledProcessError(
+            1,
+            "scw",
+            stderr=json.dumps(
+                {
+                    "error": "scaleway-sdk-go: precondition failed: , invalidstate 'stopped' for the action 'terminate'"
+                }
+            ),
+        )
+        for fails in (False, True):
+            with self.subTest(fallback_fails=fails):
+                run_command.reset_mock()
+                run_command.side_effect = [
+                    error,
+                    (
+                        CalledProcessError(1, "scw", stderr="delete rejected")
+                        if fails
+                        else Mock()
+                    ),
+                ]
+                instance = self.instance(
+                    server_id="server-id", saved_image_id="backup-id"
+                )
+                with patch.object(ScalewayInstance, "_record_state") as record:
+                    if fails:
+                        with self.assertRaises(CalledProcessError) as caught:
+                            instance.delete()
+                        self.assertIn("delete rejected", caught.exception.__notes__[0])
+                        self.assertEqual(instance.server_id, "server-id")
+                        record.assert_not_called()
+                    else:
+                        instance.delete()
+                        self.assertIsNone(instance.server_id)
+                        record.assert_called_once_with(deleted=True)
+                self.assertEqual(
+                    [call.args[0][3] for call in run_command.call_args_list],
+                    ["terminate", "delete"],
+                )
+                self.assertEqual(instance.saved_image_id, "backup-id")
+
+    @patch("models.run")
+    def test_stopped_server_dry_run_previews_delete(self, run_command):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.instance(server_id="server-id", stopped_at=1000, dry_run=True).delete()
+        self.assertIn("server delete server-id with-volumes=all", output.getvalue())
+        self.assertNotIn("server terminate", output.getvalue())
+        run_command.assert_not_called()
+
+    @patch(
+        "models.run",
+        side_effect=CalledProcessError(1, "scw", stderr="termination rejected"),
+    )
     def test_delete_retains_id_on_failure(self, run_command):
         instance = self.instance(server_id="server-id")
-        with self.assertRaises(CalledProcessError):
+        with self.assertRaises(CalledProcessError) as caught:
             instance.delete()
         self.assertEqual(instance.server_id, "server-id")
+        self.assertIn("termination rejected", caught.exception.__notes__[0])
+        run_command.assert_called_once()
 
     @patch("models.run")
     def test_invalid_lifecycle_calls_do_not_run_commands(self, run_command):
@@ -398,13 +524,38 @@ class ScalewayInstanceTests(unittest.TestCase):
 
 
 class ScalewayEntryPointTests(unittest.TestCase):
+    @patch("runner.ScalewayInstance.load_operation")
+    @patch("runner.volumes.get_operation", return_value={"state": "prefetching"})
+    def test_stop_recovers_operation_without_target_server(self, get_operation, load):
+        instance = Mock(
+            server_id=None,
+            operation_id="operation-id",
+            zone="fr-par-2",
+            dry_run=False,
+            save_on_completion=True,
+        )
+        instance.return_value = instance
+        load.return_value = instance
+        with (
+            patch("sys.argv", ["scw-stop", "--operation-id", "operation-id"]),
+            redirect_stdout(io.StringIO()) as output,
+        ):
+            scw_stop()
+        load.assert_called_once_with("operation-id")
+        get_operation.assert_called_once_with("operation-id")
+        instance.save.assert_not_called()
+        instance.delete.assert_called_once()
+        self.assertIn("Skipping save", output.getvalue())
+
     @patch("runner.ScalewayInstance.load")
     def test_save_and_stop_default_to_first_active_instance(self, load):
         for entrypoint, command in ((scw_save, "scw-save"), (scw_stop, "scw-stop")):
             for save_enabled in (False, True):
                 with self.subTest(command=command, save=save_enabled):
                     instance = Mock(
+                        type="DEV1-M",
                         server_id="server-id",
+                        operation_id=None,
                         zone="fr-par-2",
                         dry_run=False,
                         save_on_completion=save_enabled,
@@ -423,6 +574,7 @@ class ScalewayEntryPointTests(unittest.TestCase):
                     self.assertIn(
                         "Selected Scaleway server server-id", output.getvalue()
                     )
+                    self.assertIn("Selected instance type: DEV1-M", output.getvalue())
                     instance.create.assert_not_called()
                     if command == "scw-save" or save_enabled:
                         instance.save.assert_called_once()
@@ -478,21 +630,258 @@ class ScalewayEntryPointTests(unittest.TestCase):
     def test_start_uses_definition_and_leaves_server_running(self, select):
         definition = Path(__file__).parent / "fixtures" / "instances" / "render-s.yaml"
         for dry_run in (False, True):
-            instance = Mock(server_id="server-id", zone="fr-par-2")
+            instance = Mock(type="DEV1-M", server_id="server-id", zone="fr-par-2")
             instance.return_value = instance
             select.return_value = instance
             arguments = ["scw-start", str(definition)] + (
                 ["--dry-run"] if dry_run else []
             )
-            with patch("sys.argv", arguments), redirect_stdout(io.StringIO()):
+            with patch("sys.argv", arguments), redirect_stdout(io.StringIO()) as output:
                 scw_start()
+            self.assertIn("Selected instance type: DEV1-M", output.getvalue())
             instance.assert_called_once_with(dry_run=dry_run)
             instance.create.assert_called_once()
             instance.save.assert_not_called()
             instance.delete.assert_not_called()
 
+    @patch("models.ScalewayInstanceRequest.select", autospec=True)
+    def test_start_loads_volume_definition_path_relative_to_instance(self, select):
+        with TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            volume_path = root / "volume.yaml"
+            volume_path.write_text(
+                "name: models-prefetched\n" "mount_path: /mnt/models\n"
+            )
+            definition = root / "instance.yaml"
+            definition.write_text(
+                "provider: scaleway\n" "type: RENDER-S\n" 'volume: "volume.yaml"\n'
+            )
+            instance = Mock(server_id="server-id", zone="fr-par-2")
+            instance.return_value = instance
+            select.return_value = instance
+            with patch("sys.argv", ["scw-start", str(definition)]):
+                with redirect_stdout(io.StringIO()):
+                    scw_start()
+        request = select.call_args.args[0]
+        self.assertEqual(request.volume.name, "models-prefetched")
+        self.assertEqual(request.volume.mount_path, "/mnt/models")
+        instance.create.assert_called_once_with()
+
+    def test_scw_volume_dry_run_previews_build_without_provisioning(self):
+        with TemporaryDirectory() as temporary_dir:
+            worker_definition = Path(temporary_dir) / "worker.yaml"
+            worker_definition.write_text("provider: scaleway\ntype: DEV1-M\n")
+            worker = Mock(type="DEV1-M", server_id=None)
+            worker_request = Mock(
+                volume=None,
+                zone="fr-par-2",
+                return_value=worker,
+            )
+            arguments = [
+                "scw-volume",
+                "create",
+                "sd_t2i_illustrious.yaml",
+                "--worker-definition",
+                str(worker_definition),
+                "--dry-run",
+            ]
+            with (
+                patch(
+                    "runner.RemoteInstanceRequest.from_dict",
+                    return_value=worker_request,
+                ),
+                patch("sys.argv", arguments),
+                redirect_stdout(io.StringIO()) as output,
+            ):
+                scw_volume()
+
+        rendered = output.getvalue()
+        self.assertIn("[dry-run] create volume worker DEV1-M", rendered)
+        self.assertIn("build-volume --worker-id '<worker-id>'", rendered)
+        self.assertIn("--prefix models/sdxl", rendered)
+        self.assertIn("resolve volume sd-t2i-illustrious", rendered)
+        worker.create.assert_not_called()
+        worker.delete.assert_not_called()
+
+    def test_scw_volume_loads_user_dirs_recipe_without_mountpoint(self):
+        with TemporaryDirectory() as temporary_dir:
+            home = Path(temporary_dir)
+            definitions = home / ".config" / "scw" / "volume_definitions"
+            definitions.mkdir(parents=True)
+            (definitions / "user-models.yaml").write_text(
+                "name: user-models\n"
+                "bucket: model-bucket\n"
+                "dirs:\n"
+                "  - models/checkpoints/\n"
+                "size_gb: 50\n"
+                "zone: fr-par-2\n"
+            )
+            worker_definition = home / "worker.yaml"
+            worker_definition.write_text("provider: scaleway\ntype: DEV1-M\n")
+            worker = Mock(type="DEV1-M", server_id=None)
+            worker_request = Mock(
+                volume=None,
+                zone="fr-par-2",
+                return_value=worker,
+            )
+            with (
+                patch("runner.Path.home", return_value=home),
+                patch(
+                    "runner.RemoteInstanceRequest.from_dict",
+                    return_value=worker_request,
+                ),
+                patch(
+                    "sys.argv",
+                    [
+                        "scw-volume",
+                        "create",
+                        "user-models.yaml",
+                        "--worker-definition",
+                        str(worker_definition),
+                        "--dry-run",
+                    ],
+                ),
+                redirect_stdout(io.StringIO()) as output,
+            ):
+                scw_volume()
+
+        rendered = output.getvalue()
+        self.assertIn("--bucket model-bucket", rendered)
+        self.assertIn("--prefix models/checkpoints", rendered)
+        self.assertIn("resolve volume user-models", rendered)
+        self.assertIn(
+            "Volume reference for an instance (set mount_path there)", rendered
+        )
+        self.assertNotIn("mount_path:", rendered)
+        worker.create.assert_not_called()
+        worker.delete.assert_not_called()
+
+    @patch(
+        "runner.volumes.find_block_volume_by_name", return_value="retained-volume-id"
+    )
+    @patch("runner.subprocess.run")
+    def test_scw_volume_uses_builder_path_and_reports_remote_failure(
+        self, ssh_run, find_volume
+    ):
+        with TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            recipe_path = root / "recipe.yaml"
+            recipe_path.write_text(
+                "name: test-volume\n"
+                "bucket: model-bucket\n"
+                "size_gb: 50\n"
+                "prefixes:\n"
+                "  - models/checkpoints\n"
+                "zone: fr-par-2\n"
+            )
+            worker_path = root / "worker.yaml"
+            worker_path.write_text("provider: scaleway\ntype: DEV1-M\n")
+            worker = Mock(type="DEV1-M", server_id="worker-id")
+            worker.return_value = worker
+            worker_request = Mock(volume=None, zone="fr-par-2", return_value=worker)
+            ssh_run.side_effect = CalledProcessError(
+                2,
+                ["ssh"],
+                output="Syncing source\n",
+                stderr="Volume retained: retained-volume-id\n",
+            )
+            arguments = [
+                "scw-volume",
+                "create",
+                str(recipe_path),
+                "--worker-definition",
+                str(worker_path),
+            ]
+            with (
+                patch(
+                    "runner.RemoteInstanceRequest.from_dict",
+                    return_value=worker_request,
+                ),
+                patch("sys.argv", arguments),
+                redirect_stdout(io.StringIO()) as stdout,
+                redirect_stderr(io.StringIO()) as stderr,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "exited with status 2"):
+                    scw_volume()
+
+        remote_command = ssh_run.call_args.args[0][2]
+        self.assertEqual(ssh_run.call_args.args[0][:2], ["ssh", "-tt"])
+        self.assertNotIn("capture_output", ssh_run.call_args.kwargs)
+        self.assertIn('exec "$HOME/.local/bin/build-volume"', remote_command)
+        self.assertIn("Syncing source", stdout.getvalue())
+        self.assertIn("Volume retained: retained-volume-id", stderr.getvalue())
+        self.assertIn(
+            "Volume retained after build failure: retained-volume-id", stderr.getvalue()
+        )
+        find_volume.assert_called_once_with("test-volume", zone="fr-par-2")
+        worker.delete.assert_called_once()
+
+    @patch("runner.volumes.delete_block_volume")
+    @patch("runner.volumes.resolve_block_volume", return_value="volume-uuid")
+    def test_scw_volume_delete_accepts_explicit_name_or_id(
+        self, resolve_volume, delete_volume
+    ):
+        for option, reference in (
+            ("--volume-name", "models-prefetched"),
+            ("--volume-id", "12345678-1234-4234-8234-123456789abc"),
+        ):
+            with self.subTest(option=option):
+                resolve_volume.reset_mock()
+                delete_volume.reset_mock()
+                with (
+                    patch(
+                        "sys.argv",
+                        ["scw-volume", "delete", option, reference, "--yes"],
+                    ),
+                    redirect_stdout(io.StringIO()),
+                ):
+                    scw_volume()
+
+                resolve_volume.assert_called_once_with(
+                    volume_id=reference if option == "--volume-id" else None,
+                    name=reference if option == "--volume-name" else None,
+                    zone="fr-par-2",
+                )
+                delete_volume.assert_called_once_with("volume-uuid", zone="fr-par-2")
+
 
 class RemoteInstanceRequestTests(unittest.TestCase):
+    def test_instance_volume_requires_name_or_id_and_safe_mount_path(self):
+        for volume, message in (
+            ({"mount_path": "/mnt/models"}, "exactly one of name or id"),
+            (
+                {
+                    "name": "models",
+                    "id": "12345678-1234-4234-8234-123456789abc",
+                    "mount_path": "/mnt/models",
+                },
+                "exactly one of name or id",
+            ),
+            ({"id": "bad", "mount_path": "/mnt/models"}, "volume id is invalid"),
+            ({"name": "models", "mount_path": "/mnt/../models"}, "parent segments"),
+        ):
+            with self.subTest(volume=volume):
+                with self.assertRaisesRegex(ValueError, message):
+                    RemoteInstanceRequest(volume=volume)
+
+        for mount_path in ("/home/adrien/.local/share/models", "/etc/models"):
+            with self.subTest(mount_path=mount_path):
+                request = RemoteInstanceRequest(
+                    volume={"name": "models", "mount_path": mount_path}
+                )
+                self.assertEqual(request.volume.mount_path, mount_path)
+
+    def test_volume_rejects_conflicting_user_cloud_init_mount(self):
+        volume = {
+            "id": "12345678-1234-4234-8234-123456789abc",
+            "mount_path": "/mnt/models",
+        }
+        with self.assertRaisesRegex(ValueError, "already configures mount path"):
+            RemoteInstanceRequest(
+                volume=volume,
+                **{"cloud-init": {"mounts": [["/dev/sdb", "/mnt/models", "ext4"]]}},
+            )
+
     def test_range_endpoints_are_optional(self):
         for field in (
             "gpu_memory_rng",
@@ -508,11 +897,11 @@ class RemoteInstanceRequestTests(unittest.TestCase):
 
     def test_range_defaults_are_preserved(self):
         request = RemoteInstanceRequest()
-        self.assertEqual(request.gpu_memory_rng, (8, 160))
-        self.assertEqual(request.vcpus_rng, (4, 16))
-        self.assertEqual(request.ram_rng, (16, 64))
-        self.assertEqual(request.storage_rng, (100, 1000))
-        self.assertEqual(request.bandwidth_rng, (100, 5000))
+        self.assertEqual(request.gpu_memory_rng, (None, None))
+        self.assertEqual(request.vcpus_rng, (None, None))
+        self.assertEqual(request.ram_rng, (None, None))
+        self.assertEqual(request.storage_rng, (None, None))
+        self.assertEqual(request.bandwidth_rng, (None, None))
 
 
 class InstanceSelectionTests(unittest.TestCase):
@@ -648,6 +1037,29 @@ class InstanceSelectionTests(unittest.TestCase):
         )
 
     @patch("models.run")
+    def test_selects_gpu_without_local_volume(self, run_command):
+        run_command.return_value.stdout = json.dumps(
+            [
+                self.server_type(
+                    name="L4-1-24G",
+                    gpu=1,
+                    cpu=8,
+                    ram=48 * 1024**3,
+                    local_volume_max_size=0,
+                    bandwidth=2500 * 10**6,
+                )
+            ]
+        )
+
+        instance = ScalewayInstanceRequest(
+            image="87dba51d-c51b-4fe8-ac72-57e904ac49bb"
+        )()
+
+        self.assertEqual(instance.type, "L4-1-24G")
+        self.assertEqual(instance.gpu_memory, 24)
+        self.assertEqual(instance.storage, 0)
+
+    @patch("models.run")
     def test_inclusive_and_open_bounds_for_every_resource(self, run_command):
         run_command.return_value.stdout = json.dumps([self.server_type()])
         for resource, value in (
@@ -709,6 +1121,547 @@ class InstanceSelectionTests(unittest.TestCase):
         run_command.return_value.stdout = json.dumps([self.server_type(name="unknown")])
         with self.assertRaisesRegex(ValueError, "No available"):
             self.request(gpu_memory_rng=(1, None))()
+
+
+class VolumeOperationTests(unittest.TestCase):
+    def setUp(self):
+        temporary_home = TemporaryDirectory()
+        self.addCleanup(temporary_home.cleanup)
+        self.home = Path(temporary_home.name)
+        home_patch = patch("volumes.Path.home", return_value=self.home)
+        home_patch.start()
+        self.addCleanup(home_patch.stop)
+
+    def test_create_volume_uses_decimal_gigabytes_and_operation_tag(self):
+        operation_id = "12345678-1234-4234-8234-123456789abc"
+        run_command = Mock(return_value=Mock(stdout='{"id":"volume-id"}'))
+        with redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(
+                volumes.create_block_volume(
+                    zone="fr-par-2",
+                    size_gb=50,
+                    operation_id=operation_id,
+                    run_command=run_command,
+                ),
+                "volume-id",
+            )
+        self.assertIn("Requesting a 50GB block volume", output.getvalue())
+        self.assertIn("Block volume created: volume-id", output.getvalue())
+        arguments = run_command.call_args.args[0]
+        self.assertIn("from-empty.size=50GB", arguments)
+        self.assertIn(f"tags.0=queue-prefetch-{operation_id}", arguments)
+
+    def test_find_block_volume_by_name_queries_exact_zone_and_name(self):
+        run_command = Mock(
+            return_value=Mock(
+                stdout=json.dumps(
+                    [
+                        {"id": "volume-id", "name": "queue-prefetch-operation"},
+                        {"id": "other-id", "name": "other-volume"},
+                    ]
+                )
+            )
+        )
+        self.assertEqual(
+            volumes.find_block_volume_by_name(
+                "queue-prefetch-operation",
+                zone="fr-par-2",
+                run_command=run_command,
+            ),
+            "volume-id",
+        )
+        self.assertEqual(
+            run_command.call_args.args[0],
+            [
+                "scw",
+                "block",
+                "volume",
+                "list",
+                "name=queue-prefetch-operation",
+                "zone=fr-par-2",
+                "-o",
+                "json",
+            ],
+        )
+
+    def test_instance_volume_requires_one_existing_reference_and_mountpoint(self):
+        with self.assertRaisesRegex(ValueError, "exactly one of name or id"):
+            ScalewayInstance(
+                type="RENDER-S",
+                vcpus=8,
+                ram=32,
+                storage=0,
+                bandwidth=1000,
+                volume={"mount_path": "/mnt/models"},
+            )
+        with self.assertRaisesRegex(ValueError, "exactly one of name or id"):
+            ScalewayInstance(
+                type="RENDER-S",
+                vcpus=8,
+                ram=32,
+                storage=0,
+                bandwidth=1000,
+                volume={
+                    "id": "12345678-1234-4234-8234-123456789abc",
+                    "name": "models",
+                    "mount_path": "/mnt/models",
+                },
+            )
+
+    def test_volume_command_failure_includes_provider_response(self):
+        error = CalledProcessError(
+            1,
+            ["scw", "block", "volume", "create"],
+            stderr="permission denied for zone fr-par-2",
+        )
+        with self.assertRaises(CalledProcessError) as caught:
+            volumes._cli(
+                ["scw", "block", "volume", "create"],
+                run_command=Mock(side_effect=error),
+            )
+        self.assertIn(
+            "permission denied for zone fr-par-2", caught.exception.__notes__[0]
+        )
+
+    @patch("volumes.get_server")
+    def test_delete_helper_detaches_data_volume_before_terminating(self, get_server):
+        get_server.return_value = {
+            "state": "running",
+            "volumes": {
+                "0": {"id": "root-volume"},
+                "1": {"id": "prefetch-volume"},
+            },
+        }
+        run_command = Mock()
+        volumes.delete_helper(
+            "helper-id",
+            zone="fr-par-2",
+            volume_id="prefetch-volume",
+            run_command=run_command,
+        )
+        commands = [call.args[0] for call in run_command.call_args_list]
+        self.assertEqual(
+            [command[3] for command in commands], ["stop", "update", "terminate"]
+        )
+        self.assertIn("volume-ids.0=root-volume", commands[1])
+        self.assertNotIn("prefetch-volume", commands[1])
+        self.assertIn("with-block=false", commands[2])
+
+    def test_operation_journal_persists_ids_without_credentials(self):
+        operation_id = volumes.create_operation(
+            "fr-par-2",
+            {"bucket": "models", "dirs": ["weights/"]},
+        )
+        volumes.update_operation(
+            operation_id,
+            volume_id="12345678-1234-4234-8234-123456789abc",
+            state="prefetching",
+        )
+        operation = volumes.get_operation(operation_id)
+        self.assertEqual(operation["state"], "prefetching")
+        self.assertIsNone(operation["helper_server_id"])
+        self.assertEqual(operation["config"]["bucket"], "models")
+        self.assertNotIn("secret", json.dumps(operation).lower())
+
+    def test_operation_host_keys_use_private_per_operation_directory(self):
+        path = volumes.operation_known_hosts_path("operation-123")
+        self.assertEqual(path.name, "operation-123")
+        self.assertEqual(path.parent.name, "known_hosts")
+        self.assertEqual(path.parent.stat().st_mode & 0o777, 0o700)
+
+    def test_server_host_keys_use_private_per_server_directory(self):
+        path = volumes.server_known_hosts_path("server-123")
+        self.assertEqual(path.name, "server-server-123")
+        self.assertEqual(path.parent.name, "known_hosts")
+        self.assertEqual(path.parent.stat().st_mode & 0o777, 0o700)
+
+    @patch("volumes.get_server")
+    def test_target_mount_verification_uses_server_specific_known_hosts(
+        self, get_server
+    ):
+        get_server.return_value = {
+            "public_ips": [{"address": "192.0.2.10"}],
+        }
+        run_command = Mock()
+        with patch(
+            "volumes.server_known_hosts_path", return_value=Path("/tmp/server-hosts")
+        ):
+            volumes.verify_target_mount(
+                server_id="server-123",
+                zone="fr-par-2",
+                config={"mount_path": "/mnt/models", "ssh_user": "adrien"},
+                timeout_minutes=1,
+                run_command=run_command,
+            )
+        command = run_command.call_args.args[0]
+        self.assertIn("adrien@192.0.2.10", command)
+        self.assertIn("UserKnownHostsFile=/tmp/server-hosts", command)
+        self.assertIn("GlobalKnownHostsFile=/dev/null", command)
+
+    def test_helper_ssh_fails_fast_with_diagnostic_and_isolated_host_keys(self):
+        failure = CalledProcessError(
+            255,
+            ["ssh"],
+            stderr="Permission denied (publickey).",
+        )
+        run_command = Mock(side_effect=failure)
+        with self.assertRaisesRegex(RuntimeError, r"Permission denied \(publickey\)"):
+            volumes.wait_for_helper_cloud_init(
+                host="192.0.2.10",
+                config={
+                    "prefetch_timeout_minutes": 10,
+                    "ssh_known_hosts_file": "/tmp/op-known-hosts",
+                },
+                run_command=run_command,
+            )
+        run_command.assert_called_once()
+        command = run_command.call_args.args[0]
+        self.assertIn("ubuntu@192.0.2.10", command)
+        self.assertIn("UserKnownHostsFile=/tmp/op-known-hosts", command)
+        self.assertIn("GlobalKnownHostsFile=/dev/null", command)
+
+    def test_operation_load_restores_partial_resource_ids(self):
+        instance = ScalewayInstance(
+            type="RENDER-S",
+            vcpus=8,
+            ram=32,
+            storage=0,
+            bandwidth=1000,
+            volume={
+                "name": "models-prefetched",
+                "mount_path": "/mnt/models",
+            },
+        )
+        operation_id = volumes.create_operation(
+            "fr-par-2", instance.model_dump(mode="json")
+        )
+        volume_id = "12345678-1234-4234-8234-123456789abc"
+        volume_uuid = "12345678-1234-4234-8234-123456789abc"
+        volumes.update_operation(
+            operation_id,
+            volume_id=volume_id,
+            volume_uuid=volume_uuid,
+            state="volume_ready",
+        )
+        restored = ScalewayInstance.load_operation(operation_id)
+        self.assertEqual(restored.operation_id, operation_id)
+        self.assertEqual(restored.volume_id, volume_id)
+        self.assertEqual(restored.volume_uuid, volume_uuid)
+        self.assertIsNone(restored.server_id)
+
+    @patch("models.run")
+    def test_stopping_partial_operation_deletes_detached_volume(self, run_command):
+        operation_id = volumes.create_operation(
+            "fr-par-2", {"type": "RENDER-S", "volume": {"size_gb": 50}}
+        )
+        volume_id = "12345678-1234-4234-8234-123456789abc"
+        volumes.update_operation(
+            operation_id, volume_id=volume_id, state="volume_ready"
+        )
+        instance = ScalewayInstance(
+            type="RENDER-S",
+            vcpus=8,
+            ram=32,
+            storage=0,
+            bandwidth=1000,
+            operation_id=operation_id,
+            volume_id=volume_id,
+        )
+        instance.delete()
+        self.assertEqual(
+            run_command.call_args.args[0],
+            [
+                "scw",
+                "block",
+                "volume",
+                "delete",
+                volume_id,
+                "zone=fr-par-2",
+                "-o",
+                "json",
+            ],
+        )
+        self.assertEqual(volumes.get_operation(operation_id)["state"], "deleted")
+
+    @patch("models.run")
+    def test_stopped_server_not_found_does_not_block_volume_deletion(self, run_command):
+        run_command.side_effect = [
+            CalledProcessError(1, "scw", stderr="server not found"),
+            Mock(),
+            Mock(),
+        ]
+        instance = ScalewayInstance(
+            server_id="server-id",
+            stopped_at=1,
+            volume_id="12345678-1234-4234-8234-123456789abc",
+            vcpus=8,
+            ram=32,
+            storage=0,
+            bandwidth=1000,
+        )
+        with patch.object(instance, "_record_state"):
+            instance.delete()
+        self.assertEqual(
+            run_command.call_args_list[2].args[0][1:4],
+            ["block", "volume", "delete"],
+        )
+
+    @patch(
+        "models.run", side_effect=CalledProcessError(1, "scw", stderr="access denied")
+    )
+    def test_failed_volume_cleanup_preserves_operation_id(self, run_command):
+        operation_id = volumes.create_operation(
+            "fr-par-2", {"type": "RENDER-S", "volume": {"size_gb": 50}}
+        )
+        volume_id = "12345678-1234-4234-8234-123456789abc"
+        volumes.update_operation(
+            operation_id, volume_id=volume_id, state="volume_ready"
+        )
+        instance = ScalewayInstance(
+            type="RENDER-S",
+            vcpus=8,
+            ram=32,
+            storage=0,
+            bandwidth=1000,
+            operation_id=operation_id,
+            volume_id=volume_id,
+        )
+        with self.assertRaises(CalledProcessError):
+            instance.delete()
+        self.assertEqual(instance.volume_id, volume_id)
+        operation = volumes.get_operation(operation_id)
+        self.assertEqual(operation["state"], "volume_ready")
+        self.assertEqual(operation["volume_id"], volume_id)
+
+    @patch("models.run")
+    def test_save_detaches_prefetch_volume_before_backup(self, run_command):
+        run_command.side_effect = [
+            Mock(
+                stdout=json.dumps(
+                    {
+                        "state": "running",
+                        "Volumes": [
+                            {"id": "root-volume"},
+                            {"id": "prefetch-volume"},
+                        ],
+                    }
+                )
+            ),
+            Mock(),
+            Mock(),
+            Mock(stdout='{"id":"saved-image"}'),
+        ]
+        instance = ScalewayInstance(
+            server_id="server-id",
+            volume_id="prefetch-volume",
+            vcpus=8,
+            ram=32,
+            storage=0,
+            bandwidth=1000,
+        )
+        with patch.object(instance, "_record_state"):
+            instance.save()
+        detach_args = run_command.call_args_list[2].args[0]
+        backup_args = run_command.call_args_list[3].args[0]
+        self.assertIn("volume-ids.0=root-volume", detach_args)
+        self.assertEqual(backup_args[3], "backup")
+
+    def test_delete_ignores_only_not_found_and_preserves_other_failures(self):
+        missing = CalledProcessError(
+            1,
+            "scw",
+            stderr=json.dumps(
+                {"message": "cannot find resource 'volume' with ID 'missing-id'"}
+            ),
+        )
+        volumes.delete_block_volume(
+            "12345678-1234-4234-8234-123456789abc",
+            zone="fr-par-2",
+            run_command=Mock(side_effect=missing),
+        )
+        denied = CalledProcessError(1, "scw", stderr="access denied")
+        with self.assertRaises(CalledProcessError):
+            volumes.delete_block_volume(
+                "12345678-1234-4234-8234-123456789abc",
+                zone="fr-par-2",
+                run_command=Mock(side_effect=denied),
+            )
+
+    def test_s3_sync_uses_recursive_prefixes_without_controller_listing(self):
+        run_command = Mock()
+        credentials = {
+            "access_key": "local-access",
+            "secret_key": "local-secret",
+        }
+        with (
+            patch.dict(os.environ, {"USER": "adrien"}),
+            redirect_stdout(io.StringIO()) as output,
+        ):
+            volumes.sync_prefixes_over_ssh(
+                host="192.0.2.10",
+                config={
+                    "bucket": "model-bucket",
+                    "dirs": ["checkpoints/", "loras/"],
+                    "mount_path": "/mnt/models",
+                    "size_gb": 100,
+                    "prefetch_timeout_minutes": 10,
+                    "ssh_user": "root",
+                    "ssh_known_hosts_file": "/tmp/op-known-hosts",
+                },
+                credentials=credentials,
+                region="fr-par",
+                run_command=run_command,
+            )
+        command = run_command.call_args.args[0]
+        remote_script = run_command.call_args.kwargs["input"]
+        self.assertIn("s3://model-bucket/users/adrien/checkpoints/", remote_script)
+        self.assertIn("s3://model-bucket/users/adrien/loras/", remote_script)
+        self.assertIn("/mnt/models/checkpoints", remote_script)
+        self.assertIn("/mnt/models/loras", remote_script)
+        self.assertEqual(remote_script.count("aws s3 sync"), 2)
+        self.assertNotIn("list-objects", remote_script)
+        self.assertIn("local-secret", remote_script)
+        self.assertNotIn("local-secret", command)
+        self.assertIn("UserKnownHostsFile=/tmp/op-known-hosts", command)
+        self.assertIn("root@192.0.2.10", command)
+        self.assertIn(
+            "s3://model-bucket/users/adrien/checkpoints/ -> /mnt/models/checkpoints",
+            output.getvalue(),
+        )
+        self.assertIn("S3 sync and volume capacity check completed", output.getvalue())
+
+    def test_helper_cloud_init_guards_root_disk_before_formatting(self):
+        cloud_init = volumes.helper_cloud_init("/mnt/models")
+        script = yaml.safe_load(cloud_init)["runcmd"][0][-1]
+        self.assertIn("Expected exactly one non-root data disk", script)
+        self.assertIn(
+            "Refusing to format a data disk that already has a filesystem", script
+        )
+        self.assertIn('mkfs.ext4 -F "$data_disk"', script)
+        self.assertIn("/mnt/models", script)
+
+    def test_empty_s3_prefix_and_capacity_overflow_fail_in_helper_script(self):
+        run_command = Mock()
+        volumes.sync_prefixes_over_ssh(
+            host="192.0.2.10",
+            config={
+                "bucket": "model-bucket",
+                "dirs": ["checkpoints/"],
+                "mount_path": "/mnt/models",
+                "size_gb": 5,
+                "ssh_user": "root",
+            },
+            credentials={"access_key": "a", "secret_key": "b"},
+            region="fr-par",
+            run_command=run_command,
+        )
+        script = run_command.call_args.kwargs["input"]
+        self.assertIn("Requested S3 prefix is empty", script)
+        self.assertIn("Synced data exceeds the configured volume size", script)
+
+    def test_worker_volume_builder_preserves_object_and_prefix_hierarchy(self):
+        script_path = Path(__file__).parents[2] / "prefetch-volume.sh"
+        script = script_path.read_text()
+        self.assertIn("command -v aws >/dev/null", script)
+        self.assertIn("AWS CLI is required on the worker", script)
+        self.assertIn('destination="$mount_path/$prefix"', script)
+        self.assertIn("aws s3api head-object", script)
+        self.assertIn('aws s3 cp "s3://$bucket/$object_key" "$destination"', script)
+        self.assertIn('aws s3 sync "$source" "$destination"', script)
+        self.assertIn('"$component" != . && "$component" != ..', script)
+        self.assertNotIn('"$prefix" != *..*', script)
+        self.assertIn(
+            'attach-volume "server-id=$worker" "volume-id=$volume" volume-type=sbs_volume',
+            script,
+        )
+        self.assertEqual(
+            script.count('detach-volume "server-id=$worker" "volume-id=$volume"'), 2
+        )
+        self.assertIn("volume_attached_to_worker()", script)
+        self.assertIn("run_aws_transfer()", script)
+        self.assertIn("attempt <= 5", script)
+        self.assertIn('run_aws_transfer aws s3 sync "$source" "$destination"', script)
+        self.assertIn(
+            'any(.[]; .product_resource_id == $worker and .status == "attached")',
+            script,
+        )
+        self.assertIn(
+            "Expected one new ${size_gb}GB disk after waiting 60 seconds", script
+        )
+        self.assertIn(
+            'filesystem_type=$(sudo -n blkid -p -s TYPE -o value "$disk"', script
+        )
+        self.assertIn("blkid_status != 2", script)
+        self.assertIn('[[ "$filesystem_type" == ext4 ]]', script)
+        self.assertIn("Refusing to use $disk with unsupported filesystem", script)
+        self.assertIn('sudo -n chown "$(id -u):$(id -g)" "$mount_path"', script)
+        self.assertIn("awk '/^[[:space:]]*[\\[{]/ {in_json=1} in_json {print}'", script)
+        self.assertIn('echo "Reusing existing volume $volume named $name"', script)
+        self.assertIn("Volume may be retained; look up the volume named", script)
+
+    @patch("models.run")
+    @patch(
+        "volumes.resolve_block_volume",
+        return_value="12345678-1234-4234-8234-123456789abc",
+    )
+    @patch("volumes.verify_target_mount")
+    def test_target_is_created_with_existing_volume_and_mount_cloud_init(
+        self, verify_mount, resolve_volume, run_command
+    ):
+        run_command.side_effect = [
+            Mock(stdout='{"id":"server-id"}'),
+            Mock(stdout='{"state":"running"}'),
+        ]
+        instance = ScalewayInstance(
+            type="RENDER-S",
+            vcpus=8,
+            ram=32,
+            storage=0,
+            bandwidth=1000,
+            volume={
+                "name": "models-prefetched",
+                "mount_path": "/mnt/models",
+            },
+        )
+        with (
+            patch.object(instance, "_record_state"),
+            redirect_stdout(io.StringIO()) as output,
+        ):
+            instance.create()
+        create_command = run_command.call_args_list[0].args[0]
+        self.assertIn(
+            "additional-volumes.0=12345678-1234-4234-8234-123456789abc",
+            create_command,
+        )
+        cloud_init = next(
+            arg for arg in create_command if arg.startswith("cloud-init=")
+        )
+        self.assertIn("/mnt/models", cloud_init)
+        self.assertIn(
+            "/dev/disk/by-id/scsi-0SCW_sbs_volume-12345678-1234-4234-8234-123456789abc",
+            cloud_init,
+        )
+        self.assertIn('[[ -b "$data_disk" ]] && break', cloud_init)
+        self.assertNotIn("Expected one attached non-root data disk", cloud_init)
+        self.assertNotIn("mkfs", cloud_init)
+        verify_mount.assert_called_once()
+        resolve_volume.assert_called_once_with(
+            volume_id=None,
+            name="models-prefetched",
+            zone="fr-par-2",
+            run_command=run_command,
+        )
+        self.assertIn("Verifying mount /mnt/models", output.getvalue())
+        self.assertIn("Mount /mnt/models verified", output.getvalue())
+
+    @patch.dict(
+        os.environ, {"SCW_ACCESS_KEY": "access", "SCW_SECRET_KEY": "secret"}, clear=True
+    )
+    def test_credentials_are_read_from_environment(self):
+        self.assertEqual(
+            volumes.credentials_from_environment(),
+            {"access_key": "access", "secret_key": "secret"},
+        )
 
 
 class Image2VideoCommandTests(unittest.TestCase):
@@ -845,6 +1798,25 @@ class InstanceWorkflowTests(unittest.TestCase):
                             raise RuntimeError("deliver failed")
 
                     delivery.render.side_effect = render
+
+                @patch("runner.ScalewayInstance.load")
+                def test_stop_deletes_detached_volume_after_server_is_gone(self, load):
+                    instance = Mock(
+                        server_id=None,
+                        operation_id="operation-id",
+                        zone="fr-par-2",
+                        dry_run=False,
+                        save_on_completion=False,
+                    )
+                    instance.return_value = instance
+                    load.return_value = instance
+                    with (
+                        patch("sys.argv", ["scw-stop", "server-id"]),
+                        patch("runner.volumes.get_operation", return_value=None),
+                        redirect_stdout(io.StringIO()),
+                    ):
+                        scw_stop()
+                    instance.delete.assert_called_once()
                     delivery.deliver.side_effect = deliver
                     with (
                         patch("sys.argv", ["task", "workflow.yaml"]),

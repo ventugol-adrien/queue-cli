@@ -1,0 +1,8 @@
+name: sd-t2i-illustrious
+bucket: sd-cloud-storage
+size_gb: 50
+prefixes:
+  - models/caches/illustrious
+  - models/sdxl/illustrious.safetensors
+zone: fr-par-2
+region: fr-par
