@@ -294,6 +294,16 @@ surrounding quotes:
 user_input: {{ user_input | default('') | trim | yamlQuote }}
 ```
 
+### Task template paths
+
+Set `values.task_definition` relative to [templates/tasks](templates/tasks), for
+example `stable-diffusion/flux/t2i_simple.yaml.j2`. Paths relative to
+[templates](templates), such as `tasks/stable-diffusion/flux/t2i_simple.yaml.j2`,
+also work.
+
+The task-specific search directory defaults to `TEMPLATES_DIR/tasks` and can
+be overridden with the `TASK_DEF_DIR` environment variable.
+
 ### Stable Diffusion notification defaults
 
 [The desktop envelope](templates/envelopes/stable-diffusion_desktop.yaml.j2)
@@ -301,6 +311,12 @@ provides success/failure notification titles, tags, Markdown bodies, output
 links, and attachments. Select it with
 `template: "envelopes/stable-diffusion_desktop.yaml.j2"`, as shown in
 [the T2I workflow](definitions/tasks/t2i.yaml).
+
+Bare envelope names such as `template: "stable-diffusion_desktop.yaml.j2"` also
+work. The compiler searches the `envelopes/` subdirectory of `TEMPLATES_DIR`
+(the repository's `templates/` directory by default) after the existing template
+search paths. Omitting `template` selects `base.yaml.j2`, which uses the same
+fallback lookup.
 
 Add a notification to `values.deliveries` to use these defaults:
 

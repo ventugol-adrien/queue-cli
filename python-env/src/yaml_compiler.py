@@ -17,7 +17,7 @@ TEMPLATES_DIR = Path(
     os.getenv("TEMPLATES_DIR", str(PROJECT_ROOT / "templates"))
 ).resolve()
 TASK_DEF_DIR = Path(
-    os.getenv("TASK_DEF_DIR", str(PROJECT_ROOT / "templates/task_templates"))
+    os.getenv("TASK_DEF_DIR", str(TEMPLATES_DIR / "tasks"))
 ).resolve()
 VOLUME_DEF_DIR = Path(
     os.getenv("VOLUME_DEF_DIR", str(PROJECT_ROOT / "templates/volume_definitions"))
@@ -52,6 +52,7 @@ jinja_env = Environment(
             INSTANCE_DEF_DIR,
             USER_VOLUME_DEFINITIONS_DIR,
             *sorted(path for path in USER_INSTANCES_DIR.glob("*") if path.is_dir()),
+            TEMPLATES_DIR / "envelopes",
         ]
     ),
     undefined=StrictUndefined,
@@ -159,7 +160,7 @@ def parse(workflow_file: str | Path, **overrides) -> dict:
     if overrides:
         context = deep_update(context, overrides)
 
-    # 3. Load & render the Jinja template (resolves includes across TEMPLATES_DIR & TASK_DEF_DIR)
+    # 3. Load & render the Jinja template using the configured search paths
     template = jinja_env.get_template(template_name)
     rendered = template.render(**context)
 
