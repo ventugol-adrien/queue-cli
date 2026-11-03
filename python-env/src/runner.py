@@ -25,6 +25,8 @@ import yaml
 import volumes
 from jinja2 import TemplateError
 
+os.environ["PYTHONUNBUFFERED"] = "1"
+
 
 def _load_volume_definition(data: dict, instance_path: Path | None) -> None:
     volume_path = data.get("volume")
