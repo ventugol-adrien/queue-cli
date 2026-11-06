@@ -1,0 +1,58 @@
+{% set definition = definition | default({}) %}
+{% set task_definition = task_definition | default('tasks/ingest_ashby_job.yaml.j2') %}
+{# Preserve result-dependent expressions for the post-task delivery render. #}
+{% set notification_title = "{{ definition.type }} {{ definition.description }} on {{ definition.location }} {% if result.success %}Succeeded.{% else %}Failed.{% endif %} ({{ result.duration }}s)" %}
+{% set notification_body %}{% raw %}{% if result.success -%}
+### Job Ingested ({{ result.duration }}s)
+- **Platform**: `{{ task.platform }}`
+- **Kind**: `{{ task.kind }}`
+- **Job URL**: {{ task.url }}
+{% if result.lookup_command -%}
+- **Database**: `{{ result.lookup_command }}`
+{% endif -%}
+{%- else -%}
+### Job Ingestion Failed ({{ result.duration }}s)
+- **Error**: `{{ result.error }}`
+- **Platform**: `{{ task.platform }}`
+- **Kind**: `{{ task.kind }}`
+- **Job URL**: {{ task.url }}
+{%- endif %}{% endraw %}{% endset %}
+definition:
+  name: {{ definition.name | default('Job Ingestion') | tojson }}
+  description: {{ definition.description | default('job ingestion') | tojson }}
+  location: {{ definition.location | default('desktop') | tojson }}
+  type: {{ definition.type | default('ingest-job') | tojson }}
+
+{% if task_definition %}
+task:
+{% filter indent(2, true) %}
+{% include task_definition %}
+{% endfilter %}
+{% endif %}
+
+{% if deliveries | default([]) | length %}
+deliveries:
+  {% for d in deliveries | default([]) %}
+  - type: "{{ d.type }}"
+    {% if d.type == 'notification' %}
+    endpoint: {{ d.endpoint | default('https://mesh-notifications.taile72000.ts.net/notifications/desktop-jobs') | tojson }}
+    title: {{ d.title | default(notification_title) | tojson }}
+    priority: {{ d.priority | default(3) }}
+    tags: {{ d.tags | default(['briefcase', 'desktop', "{{ 'white_check_mark' if result.success else 'rotating_light' }}", "{{ 'sparkles' if result.success else 'x' }}"]) | tojson }}
+    body: {{ d.body | default(notification_body) | tojson }}
+    destination: {{ d.destination | default('') | tojson }}
+    output: {{ d.output | default("{{ result.lookup_command if result.success else '' }}") | tojson }}
+    attachment: {{ d.attachment | default('') | tojson }}
+    markdown: {{ d.markdown | default(true) | lower }}
+    {% elif d.type == 'email' %}
+    to: {{ d.to | tojson }}
+    subject: {{ d.subject | default(notification_title) | tojson }}
+    body: {{ d.body | default(notification_body) | tojson }}
+    attachments: {{ d.attachments | default([]) | tojson }}
+    {% elif d.type == 'download' %}
+    path: {{ d.path | default('/tmp/downloads') | tojson }}
+    {% endif %}
+  {% endfor %}
+{% else %}
+deliveries: []
+{% endif %}

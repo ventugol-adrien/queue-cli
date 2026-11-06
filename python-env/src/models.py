@@ -1,3 +1,5 @@
+import os
+
 from pydantic import BaseModel, field_validator, model_validator
 from typing import Any, Dict, List, Tuple, cast, Literal
 from pydantic import Field
@@ -10,12 +12,14 @@ import re
 import sqlite3
 from contextlib import closing
 from typing import Optional
-from subprocess import run, CalledProcessError, CompletedProcess
+from subprocess import run, CalledProcessError, CompletedProcess, PIPE
 from jinja2 import Template
 import time
 from uuid import UUID
 import volumes
 import yaml
+
+from utils import resolve_bin
 
 
 class BaseDelivery(BaseModel):
@@ -155,6 +159,8 @@ class Task(BaseModel):
                 )
             case "delivery":
                 return Delivery(**kwargs)
+            case "ingest-job":
+                return IngestJob(**kwargs)
             case _:
                 raise ValueError(f"Unsupported task type: {task_type!r}")
 
@@ -188,6 +194,83 @@ class Lora(BaseModel):
     @classmethod
     def from_array(cls, array: List[dict]) -> List["Lora"]:
         return [cls(**item) for item in array]
+
+
+class IngestJobResult(TaskResult):
+    job_id: Optional[str] = None
+    lookup_command: str = Field(default="")
+
+
+FUNCTIONS = {"ashby": {"job_description": "ashby_job"}}
+
+
+class IngestJob(Task):
+    platform: Literal["ashby"]
+    kind: Literal["job_description"]
+    url: str = Field(min_length=1)
+
+    def build_result(
+        self, success: bool = True, error: Optional[str] = None
+    ) -> IngestJobResult:
+        return IngestJobResult(
+            success=success,
+            output_paths=[],
+            error=error,
+            metadata={
+                "platform": self.platform,
+                "kind": self.kind,
+                "url": self.url,
+            },
+        )
+
+    def execute(self, dry_run: bool = False) -> IngestJobResult:
+        executables = [
+            "scrape",
+            "transform",
+            "ingest-job",
+        ]
+        bins = {k: resolve_bin(k) for k in executables}
+
+        pipeline = " | ".join(shlex.join([path]) for path in bins.values())
+        script = " && ".join(
+            [
+                shlex.join([FUNCTIONS[self.platform][self.kind], self.url]),
+                pipeline,
+            ]
+        )
+        command = [
+            "bash",
+            "-o",
+            "pipefail",
+            "-c",
+            script,
+        ]
+
+        print(f"Running command: {shlex.join(command)}")
+        result = self.build_result()
+        if not dry_run:
+            completed = run(
+                command,
+                check=True,
+                stdout=PIPE,
+                text=True,
+                env={
+                    **os.environ,
+                    "JOB_DB_INSERT": "true",
+                },
+            )
+            print(completed.stdout, end="")
+            try:
+                payload = json.loads(completed.stdout)
+            except json.JSONDecodeError as error:
+                raise ValueError("ingest-job did not return valid JSON") from error
+            job_id = payload.get("id") if isinstance(payload, dict) else None
+            if not isinstance(job_id, str) or not job_id.strip():
+                raise ValueError("ingest-job did not return a non-empty database job ID")
+            result.job_id = job_id
+            result.lookup_command = shlex.join(["jds", "peek", "--id", job_id])
+
+        return result
 
 
 class Text2ImageResult(TaskResult): ...

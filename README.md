@@ -304,6 +304,64 @@ also work.
 The task-specific search directory defaults to `TEMPLATES_DIR/tasks` and can
 be overridden with the `TASK_DEF_DIR` environment variable.
 
+### Ashby job ingestion
+
+Use the ingestion envelope with a job URL:
+
+```yaml
+template: envelopes/ingest-job_desktop.yaml.j2
+values:
+  definition:
+    name: Ingest Ashby job
+    location: desktop
+  url: https://jobs.ashbyhq.com/company/job-id
+  deliveries:
+    - type: notification
+    - type: email
+      to: you@example.com
+```
+
+Save this as `ingest-job.yaml` and run `task ingest-job.yaml`, or use
+`task ingest-job.yaml --dry-run` to preview without executing commands.
+The task runs `ashby_job URL && scrape | transform | ingest-job` in Bash with
+`pipefail`, so preparation must succeed and a failure in any pipeline stage
+marks the task result as failed.
+
+The envelope defaults to the Ashby task template and `ingest-job` type without
+provisioning an instance. You can still override `task_definition` and the
+`definition` fields. Bare `template: ingest-job_desktop.yaml.j2` also works.
+Notification defaults include success/failure status, duration, platform, kind,
+and the job URL; failures include the task error. Successful results capture
+the database `id` from the ingestion CLI's JSON stdout and expose `result.job_id`
+and `result.lookup_command`. The notification `output` defaults to
+`jds peek --id <job_id>`, and both push and email bodies include that command.
+This is a command to copy into a terminal, not a clickable web URL or file path;
+no command is generated on failure or during a dry run.
+There is no file attachment. Each delivery field can be
+overridden; empty strings and empty tags disable the corresponding defaults.
+Omit `deliveries` or set `deliveries: []` to send no notifications.
+
+Email deliveries require `to` and default to the same status subject and result
+body as the notification. Set `subject`, `body`, or `attachments` to override
+them. The `email` command and Gmail authentication must be configured before
+running an email delivery.
+
+`scrape`, `transform`, and `ingest-job` resolve to executable paths on `PATH`.
+The preparation command is invoked directly by its mapped name (`ashby_job`).
+If it is a Bash function, make it available to the child Bash process by exporting
+it (`export -f ashby_job`) or through your existing `BASH_ENV` configuration.
+The task does not locate or source function files, and it does not load an
+interactive shell configuration.
+
+`JOB_DB_INSERT=true` is set only for the child process. Gemini credentials are
+inherited unchanged: configure `GEMINI_API_KEY` or `GEMINI_SECRET_PATH` in the
+environment that launches `task` (or the queue worker). `ingest-job` prefixes
+secret paths with `gemini/`, so `GEMINI_SECRET_PATH` must be relative to that
+prefix. No credential path is supplied by the queue.
+The task result includes the platform, kind, and URL as metadata; it does not
+report file outputs. Ingestion must return a JSON object with a non-empty
+string `id` after saving the record; missing or invalid IDs fail the task.
+
 ### Stable Diffusion notification defaults
 
 [The desktop envelope](templates/envelopes/stable-diffusion_desktop.yaml.j2)
